@@ -1,0 +1,23 @@
+# Python cache and local environments
+.venv/
+__pycache__/
+.ipynb_checkpoints/
+*.pyc
+
+# Large datasets
+fma_small/*
+!fma_small/README.txt
+!fma_small/checksums
+
+fma_metadata/*
+!fma_metadata/README.txt
+!fma_metadata/checksums
+!fma_metadata/genres.csv
+
+# Model artifacts and archives
+*.pt
+*.pkl
+*.zip
+
+# Notebook and OS noise
+.DS_Store
