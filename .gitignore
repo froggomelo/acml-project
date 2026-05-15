@@ -6,13 +6,8 @@ __pycache__/
 
 # Large datasets
 fma_small/*
-!fma_small/README.txt
-!fma_small/checksums
 
 fma_metadata/*
-!fma_metadata/README.txt
-!fma_metadata/checksums
-!fma_metadata/genres.csv
 
 # Model artifacts and archives
 *.pt
