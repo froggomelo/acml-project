@@ -5,6 +5,10 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_DIR="$PROJECT_ROOT/.venv"
 PYTHON_BIN="${PYTHON_BIN:-}"
+PYTORCH_VERSION="${PYTORCH_VERSION:-2.11.0}"
+TORCHAUDIO_VERSION="${TORCHAUDIO_VERSION:-$PYTORCH_VERSION}"
+PYTORCH_BUILD="${PYTORCH_BUILD:-auto}"
+PYTORCH_INDEX_URL="${PYTORCH_INDEX_URL:-}"
 
 FMA_SMALL_URL="https://os.unil.cloud.switch.ch/fma/fma_small.zip"
 FMA_METADATA_URL="https://os.unil.cloud.switch.ch/fma/fma_metadata.zip"
@@ -41,8 +45,6 @@ CORE_DEPS=(
 
 NOTEBOOK_DEPS=(
   soundfile
-  torch
-  torchaudio
 )
 
 require_command() {
@@ -83,6 +85,155 @@ PY
   then
     echo "Error: Python 3.10 or newer is required." >&2
     echo "Set PYTHON_BIN to a compatible interpreter, for example: PYTHON_BIN=python3.12 bash setup.sh" >&2
+    exit 1
+  fi
+}
+
+detect_pytorch_build() {
+  local cuda_version
+
+  if [ "$PYTORCH_BUILD" != "auto" ]; then
+    echo "$PYTORCH_BUILD"
+    return
+  fi
+
+  if ! command -v nvidia-smi >/dev/null 2>&1; then
+    echo "cpu"
+    return
+  fi
+
+  cuda_version="$(nvidia-smi 2>/dev/null | sed -n 's/.*CUDA Version: \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -n 1)"
+  if [ -z "$cuda_version" ]; then
+    echo "cpu"
+    return
+  fi
+
+  "$ENV_DIR/bin/python" - "$cuda_version" <<'PY'
+from decimal import Decimal
+import sys
+
+driver_cuda = Decimal(sys.argv[1])
+if driver_cuda >= Decimal("13.0"):
+    print("cu130")
+elif driver_cuda >= Decimal("12.8"):
+    print("cu128")
+elif driver_cuda >= Decimal("12.6"):
+    print("cu126")
+else:
+    print("unsupported")
+PY
+}
+
+pytorch_build_cuda_version() {
+  local build="$1"
+
+  case "$build" in
+    cu126) echo "12.6" ;;
+    cu128) echo "12.8" ;;
+    cu130) echo "13.0" ;;
+    cpu) echo "None" ;;
+    *)
+      echo "Error: unsupported PYTORCH_BUILD '$build'. Use auto, cpu, cu126, cu128, or cu130." >&2
+      exit 1
+      ;;
+  esac
+}
+
+pytorch_matches_target() {
+  local build="$1"
+  local target_cuda
+
+  target_cuda="$(pytorch_build_cuda_version "$build")"
+
+  "$ENV_DIR/bin/python" - "$PYTORCH_VERSION" "$TORCHAUDIO_VERSION" "$target_cuda" <<'PY'
+import importlib.metadata as metadata
+import sys
+
+target_torch, target_torchaudio, target_cuda = sys.argv[1:4]
+
+try:
+    import torch
+    torch_version = metadata.version("torch")
+    torchaudio_version = metadata.version("torchaudio")
+except Exception:
+    raise SystemExit(1)
+
+def base_version(version):
+    return version.split("+", 1)[0]
+
+if base_version(torch_version) != target_torch:
+    raise SystemExit(1)
+if base_version(torchaudio_version) != target_torchaudio:
+    raise SystemExit(1)
+if str(torch.version.cuda) != target_cuda:
+    raise SystemExit(1)
+PY
+}
+
+remove_stale_pytorch_cuda_deps() {
+  local build="$1"
+  local package
+  local stale_packages=()
+
+  while IFS= read -r package; do
+    case "$build:$package" in
+      cu12*:nvidia-*-cu13|\
+      cu12*:nvidia-cublas|\
+      cu12*:nvidia-cuda-cupti|\
+      cu12*:nvidia-cuda-nvrtc|\
+      cu12*:nvidia-cuda-runtime|\
+      cu12*:nvidia-cufft|\
+      cu12*:nvidia-cufile|\
+      cu12*:nvidia-curand|\
+      cu12*:nvidia-cusolver|\
+      cu12*:nvidia-cusparse|\
+      cu12*:nvidia-nvjitlink|\
+      cu12*:nvidia-nvtx|\
+      cu130:nvidia-*-cu12|\
+      cpu:cuda-bindings|\
+      cpu:cuda-pathfinder|\
+      cpu:cuda-toolkit|\
+      cpu:nvidia-*)
+        stale_packages+=("$package")
+        ;;
+    esac
+  done < <("$ENV_DIR/bin/python" -m pip list --format=freeze | sed 's/==.*//' || true)
+
+  if [ "${#stale_packages[@]}" -gt 0 ]; then
+    echo "Removing stale PyTorch CUDA packages: ${stale_packages[*]}"
+    "$ENV_DIR/bin/python" -m pip uninstall -y "${stale_packages[@]}"
+  fi
+}
+
+install_pytorch_deps() {
+  local build
+  local index_url
+
+  build="$(detect_pytorch_build)"
+  if [ "$build" = "unsupported" ]; then
+    echo "Error: your NVIDIA driver is too old for the pinned PyTorch $PYTORCH_VERSION GPU wheels." >&2
+    echo "Update the NVIDIA driver, or rerun setup for CPU-only PyTorch with: PYTORCH_BUILD=cpu bash setup.sh" >&2
+    exit 1
+  fi
+
+  pytorch_build_cuda_version "$build" >/dev/null
+  index_url="${PYTORCH_INDEX_URL:-https://download.pytorch.org/whl/$build}"
+
+  if pytorch_matches_target "$build"; then
+    echo "PyTorch $PYTORCH_VERSION ($build) already installed. Skipping PyTorch install."
+    return
+  fi
+
+  remove_stale_pytorch_cuda_deps "$build"
+
+  echo "Installing PyTorch $PYTORCH_VERSION and torchaudio $TORCHAUDIO_VERSION ($build)..."
+  "$ENV_DIR/bin/python" -m pip install --upgrade --force-reinstall \
+    "torch==$PYTORCH_VERSION" \
+    "torchaudio==$TORCHAUDIO_VERSION" \
+    --index-url "$index_url"
+
+  if ! pytorch_matches_target "$build"; then
+    echo "Error: PyTorch installed, but the CUDA build does not match the requested '$build' target." >&2
     exit 1
   fi
 }
@@ -165,6 +316,7 @@ ensure_python_env() {
   echo "Installing/updating Python dependencies in $ENV_DIR..."
   "$ENV_DIR/bin/python" -m pip install --upgrade pip "setuptools<82" wheel
   "$ENV_DIR/bin/python" -m pip install "${CORE_DEPS[@]}" "${NOTEBOOK_DEPS[@]}"
+  install_pytorch_deps
 }
 
 ensure_fma_small
