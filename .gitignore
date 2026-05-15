@@ -4,6 +4,7 @@ __pycache__/
 .ipynb_checkpoints/
 *.pyc
 *.csv
+*.npy
 
 # Large datasets
 fma_small/*
