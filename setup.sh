@@ -36,6 +36,7 @@ CORE_DEPS=(
   python-dotenv
   notebook
   ipywidgets
+  ipython
 )
 
 NOTEBOOK_DEPS=(
@@ -141,29 +142,28 @@ ensure_python_env() {
   local python_version
 
   if [ -x "$ENV_DIR/bin/python" ]; then
-    echo "Environment already present at $ENV_DIR. Skipping Python environment setup."
-    return
+    echo "Environment already present at $ENV_DIR. Skipping venv creation."
+  else
+    if [ -d "$ENV_DIR" ]; then
+      echo "Error: $ENV_DIR already exists but does not look like a Python virtual environment." >&2
+      echo "Remove it and rerun setup.sh, or set ENV_DIR in the script to another path." >&2
+      exit 1
+    fi
+
+    python_bin="$(find_python)"
+    check_python_version "$python_bin"
+    python_version="$("$python_bin" --version 2>&1)"
+
+    echo "Creating Python virtual environment at $ENV_DIR using $python_version..."
+    if ! "$python_bin" -m venv "$ENV_DIR"; then
+      echo "Error: failed to create the virtual environment." >&2
+      echo "On Debian/Ubuntu, install venv support with: sudo apt install python3-venv" >&2
+      exit 1
+    fi
   fi
 
-  if [ -d "$ENV_DIR" ]; then
-    echo "Error: $ENV_DIR already exists but does not look like a Python virtual environment." >&2
-    echo "Remove it and rerun setup.sh, or set ENV_DIR in the script to another path." >&2
-    exit 1
-  fi
-
-  python_bin="$(find_python)"
-  check_python_version "$python_bin"
-  python_version="$("$python_bin" --version 2>&1)"
-
-  echo "Creating Python virtual environment at $ENV_DIR using $python_version..."
-  if ! "$python_bin" -m venv "$ENV_DIR"; then
-    echo "Error: failed to create the virtual environment." >&2
-    echo "On Debian/Ubuntu, install venv support with: sudo apt install python3-venv" >&2
-    exit 1
-  fi
-
-  echo "Installing Python dependencies into $ENV_DIR..."
-  "$ENV_DIR/bin/python" -m pip install --upgrade pip setuptools wheel
+  echo "Installing/updating Python dependencies in $ENV_DIR..."
+  "$ENV_DIR/bin/python" -m pip install --upgrade pip "setuptools<82" wheel
   "$ENV_DIR/bin/python" -m pip install "${CORE_DEPS[@]}" "${NOTEBOOK_DEPS[@]}"
 }
 
