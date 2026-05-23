@@ -10,11 +10,31 @@ TORCHAUDIO_VERSION="${TORCHAUDIO_VERSION:-$PYTORCH_VERSION}"
 PYTORCH_BUILD="${PYTORCH_BUILD:-auto}"
 PYTORCH_INDEX_URL="${PYTORCH_INDEX_URL:-}"
 
+read_env_file_value() {
+  local key="$1"
+  local line
+
+  if [ ! -f "$PROJECT_ROOT/.env" ]; then
+    return 1
+  fi
+
+  line="$(grep -E "^[[:space:]]*${key}=" "$PROJECT_ROOT/.env" | head -n1 || true)"
+  if [ -z "$line" ]; then
+    return 1
+  fi
+
+  line="${line#*=}"
+  line="${line%$'\r'}"
+  line="${line%\"}"
+  line="${line#\"}"
+  printf '%s\n' "$line"
+}
+
 # Directory where FMA zips are downloaded and extracted.
 # Defaults to the project root; override with DATASET_DIR=... bash setup.sh
 # or by setting DATASET_DIR in your .env file.
 if [ -z "${DATASET_DIR:-}" ] && [ -f "$PROJECT_ROOT/.env" ]; then
-  DATASET_DIR="$(grep -E '^DATASET_DIR=' "$PROJECT_ROOT/.env" | head -n1 | cut -d= -f2- | tr -d '"'"'")"
+  DATASET_DIR="$(read_env_file_value DATASET_DIR || true)"
 fi
 DATASET_DIR="${DATASET_DIR:-$PROJECT_ROOT}"
 mkdir -p "$DATASET_DIR"
@@ -36,9 +56,21 @@ FMA_METADATA_SENTINELS=(
   "$DATASET_DIR/fma_metadata/genres.csv"
 )
 
+if [ -z "${DATASET_SIZE:-}" ]; then
+  DATASET_SIZE="$(read_env_file_value DATASET_SIZE || true)"
+fi
+DATASET_SIZE="${DATASET_SIZE:-small}"
+
 # Set DOWNLOAD_MEDIUM=1 to also download fma_medium (~22 GB).
+# DATASET_SIZE=both in .env also enables this automatically.
 # Example: DOWNLOAD_MEDIUM=1 bash setup.sh
+if [ -z "${DOWNLOAD_MEDIUM:-}" ]; then
+  DOWNLOAD_MEDIUM="$(read_env_file_value DOWNLOAD_MEDIUM || true)"
+fi
 DOWNLOAD_MEDIUM="${DOWNLOAD_MEDIUM:-0}"
+if [ "$DATASET_SIZE" = "both" ]; then
+  DOWNLOAD_MEDIUM=1
+fi
 
 CORE_DEPS=(
   numpy
@@ -259,13 +291,33 @@ download_file() {
   local url="$1"
   local output_path="$2"
 
+  if [ -s "$output_path" ]; then
+    echo "$(basename "$output_path") already exists. Skipping download."
+    return
+  fi
+
+  if [ -e "$output_path" ]; then
+    echo "$(basename "$output_path") exists but is empty. Re-downloading."
+    rm -f "$output_path"
+  fi
+
   echo "Downloading $(basename "$output_path")..."
   curl -L --fail --output "$output_path" "$url"
 }
 
+require_file_after_extract() {
+  local file_path="$1"
+  local label="$2"
+
+  if [ ! -f "$file_path" ]; then
+    echo "Error: expected $label at $file_path after extraction, but it was not found." >&2
+    exit 1
+  fi
+}
+
 ensure_fma_small() {
   if [ -f "$FMA_SMALL_SENTINEL" ]; then
-    echo "FMA small audio already present. Skipping download."
+    echo "FMA small audio already present. Skipping download and extraction."
     return
   fi
 
@@ -276,17 +328,18 @@ ensure_fma_small() {
 
   echo "Extracting $(basename "$FMA_SMALL_ZIP")..."
   unzip -q "$FMA_SMALL_ZIP" -d "$DATASET_DIR"
+  require_file_after_extract "$FMA_SMALL_SENTINEL" "FMA small audio"
   rm -f "$FMA_SMALL_ZIP"
 }
 
 ensure_fma_medium() {
   if [ "$DOWNLOAD_MEDIUM" != "1" ]; then
-    echo "Skipping fma_medium download (set DOWNLOAD_MEDIUM=1 to enable, ~22 GB)."
+    echo "Skipping fma_medium download (set DOWNLOAD_MEDIUM=1 or DATASET_SIZE=both to enable, ~22 GB)."
     return
   fi
 
   if [ -f "$FMA_MEDIUM_SENTINEL" ]; then
-    echo "FMA medium audio already present. Skipping download."
+    echo "FMA medium audio already present. Skipping download and extraction."
     return
   fi
 
@@ -297,22 +350,33 @@ ensure_fma_medium() {
 
   echo "Extracting $(basename "$FMA_MEDIUM_ZIP")..."
   unzip -q "$FMA_MEDIUM_ZIP" -d "$DATASET_DIR"
+  require_file_after_extract "$FMA_MEDIUM_SENTINEL" "FMA medium audio"
   rm -f "$FMA_MEDIUM_ZIP"
 }
 
-ensure_fma_metadata() {
-  local missing=0
+fma_metadata_present() {
   local sentinel
 
   for sentinel in "${FMA_METADATA_SENTINELS[@]}"; do
     if [ ! -f "$sentinel" ]; then
-      missing=1
-      break
+      return 1
     fi
   done
 
-  if [ "$missing" -eq 0 ]; then
-    echo "FMA metadata already present. Skipping download."
+  return 0
+}
+
+require_fma_metadata_after_extract() {
+  local sentinel
+
+  for sentinel in "${FMA_METADATA_SENTINELS[@]}"; do
+    require_file_after_extract "$sentinel" "FMA metadata"
+  done
+}
+
+ensure_fma_metadata() {
+  if fma_metadata_present; then
+    echo "FMA metadata already present. Skipping download and extraction."
     return
   fi
 
@@ -323,6 +387,7 @@ ensure_fma_metadata() {
 
   echo "Extracting $(basename "$FMA_METADATA_ZIP")..."
   unzip -q "$FMA_METADATA_ZIP" -d "$DATASET_DIR"
+  require_fma_metadata_after_extract
   rm -f "$FMA_METADATA_ZIP"
 }
 
