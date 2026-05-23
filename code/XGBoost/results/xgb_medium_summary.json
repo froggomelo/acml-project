@@ -1,0 +1,25 @@
+{
+  "subset": "medium",
+  "n_trials": 40,
+  "best_params": {
+    "learning_rate": 0.03634850835726396,
+    "max_depth": 10,
+    "subsample": 0.8987158445396104,
+    "colsample_bytree": 0.7049842063691458,
+    "min_child_weight": 1,
+    "reg_alpha": 0.6463078808691591,
+    "reg_lambda": 0.30334800982314963
+  },
+  "search_best_val_acc": 0.6790419161676646,
+  "final_seeds": [
+    42,
+    0,
+    1
+  ],
+  "final_val_acc_mean": 0.6791749833666,
+  "final_val_acc_std": 0.0010046353207279525,
+  "final_test_acc_mean": 0.6442544371032517,
+  "final_test_acc_std": 0.003526533900457668,
+  "final_test_f1_mean": 0.42303112918440305,
+  "final_test_f1_std": 0.004457368964819075
+}
