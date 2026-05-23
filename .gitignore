@@ -19,3 +19,8 @@ fma_metadata/*
 
 # Notebook and OS noise
 .DS_Store
+
+!random_forest_tuning_results_medium.csv
+!random_forest_tuning_results_small.csv
+!random_forest_tuning_results_medium.jsonl
+!random_forest_tuning_results_small.jsonl

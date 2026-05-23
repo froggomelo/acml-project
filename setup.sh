@@ -30,6 +30,13 @@ read_env_file_value() {
   printf '%s\n' "$line"
 }
 
+is_truthy() {
+  case "${1,,}" in
+    1|true|yes|y|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # Directory where FMA zips are downloaded and extracted.
 # Defaults to the project root; override with DATASET_DIR=... bash setup.sh
 # or by setting DATASET_DIR in your .env file.
@@ -60,6 +67,32 @@ if [ -z "${DATASET_SIZE:-}" ]; then
   DATASET_SIZE="$(read_env_file_value DATASET_SIZE || true)"
 fi
 DATASET_SIZE="${DATASET_SIZE:-small}"
+DATASET_SIZE="${DATASET_SIZE,,}"
+case "$DATASET_SIZE" in
+  small|medium|both) ;;
+  *)
+    echo "Error: DATASET_SIZE must be small, medium, or both. Got '$DATASET_SIZE'." >&2
+    exit 1
+    ;;
+esac
+
+# Set DOWNLOAD_SPECTROGRAMS=1 to generate spectrogram .npy files during setup.
+# PREPROCESS_FOR chooses which formats: cnn, crnn, both, or none.
+if [ -z "${DOWNLOAD_SPECTROGRAMS:-}" ]; then
+  DOWNLOAD_SPECTROGRAMS="$(read_env_file_value DOWNLOAD_SPECTROGRAMS || true)"
+fi
+DOWNLOAD_SPECTROGRAMS="${DOWNLOAD_SPECTROGRAMS:-0}"
+if is_truthy "$DOWNLOAD_SPECTROGRAMS"; then
+  DOWNLOAD_SPECTROGRAMS=1
+else
+  DOWNLOAD_SPECTROGRAMS=0
+fi
+
+if [ -z "${PREPROCESS_FOR:-}" ]; then
+  PREPROCESS_FOR="$(read_env_file_value PREPROCESS_FOR || true)"
+fi
+PREPROCESS_FOR="${PREPROCESS_FOR:-both}"
+PREPROCESS_FOR="${PREPROCESS_FOR,,}"
 
 # Set DOWNLOAD_MEDIUM=1 to also download fma_medium (~22 GB).
 # DATASET_SIZE=both in .env also enables this automatically.
@@ -68,8 +101,18 @@ if [ -z "${DOWNLOAD_MEDIUM:-}" ]; then
   DOWNLOAD_MEDIUM="$(read_env_file_value DOWNLOAD_MEDIUM || true)"
 fi
 DOWNLOAD_MEDIUM="${DOWNLOAD_MEDIUM:-0}"
+if is_truthy "$DOWNLOAD_MEDIUM"; then
+  DOWNLOAD_MEDIUM=1
+else
+  DOWNLOAD_MEDIUM=0
+fi
 if [ "$DATASET_SIZE" = "both" ]; then
   DOWNLOAD_MEDIUM=1
+fi
+if [ "$DOWNLOAD_SPECTROGRAMS" = "1" ] && [ "$PREPROCESS_FOR" != "none" ]; then
+  case "$DATASET_SIZE" in
+    medium|both) DOWNLOAD_MEDIUM=1 ;;
+  esac
 fi
 
 CORE_DEPS=(
@@ -79,6 +122,7 @@ CORE_DEPS=(
   matplotlib
   seaborn
   scikit-learn
+  xgboost
   librosa
   audioread
   mutagen
@@ -190,32 +234,64 @@ pytorch_build_cuda_version() {
 
 pytorch_matches_target() {
   local build="$1"
+  local quiet="${2:-0}"
   local target_cuda
 
   target_cuda="$(pytorch_build_cuda_version "$build")"
 
-  "$ENV_DIR/bin/python" - "$PYTORCH_VERSION" "$TORCHAUDIO_VERSION" "$target_cuda" <<'PY'
+  "$ENV_DIR/bin/python" - "$PYTORCH_VERSION" "$TORCHAUDIO_VERSION" "$target_cuda" "$build" "$quiet" <<'PY'
 import importlib.metadata as metadata
 import sys
 
-target_torch, target_torchaudio, target_cuda = sys.argv[1:4]
+target_torch, target_torchaudio, target_cuda, target_build, quiet = sys.argv[1:6]
+
+def fail(message):
+    if quiet != "1":
+        print(f"PyTorch verification failed: {message}", file=sys.stderr)
+    raise SystemExit(1)
 
 try:
     import torch
+except Exception as exc:
+    fail(f"could not import torch ({type(exc).__name__}: {exc})")
+
+try:
     torch_version = metadata.version("torch")
     torchaudio_version = metadata.version("torchaudio")
-except Exception:
-    raise SystemExit(1)
+except Exception as exc:
+    fail(f"could not read torch/torchaudio package metadata ({type(exc).__name__}: {exc})")
 
-def base_version(version):
-    return version.split("+", 1)[0]
+def split_version(version):
+    base, _, local = version.partition("+")
+    return base, local.lower()
 
-if base_version(torch_version) != target_torch:
-    raise SystemExit(1)
-if base_version(torchaudio_version) != target_torchaudio:
-    raise SystemExit(1)
-if str(torch.version.cuda) != target_cuda:
-    raise SystemExit(1)
+torch_base, torch_build = split_version(torch_version)
+torchaudio_base, torchaudio_build = split_version(torchaudio_version)
+
+if torch_base != target_torch:
+    fail(f"expected torch {target_torch}, found {torch_version}")
+if torchaudio_base != target_torchaudio:
+    fail(f"expected torchaudio {target_torchaudio}, found {torchaudio_version}")
+
+if target_build == "cpu":
+    if torch.version.cuda is not None:
+        fail(f"expected CPU-only torch, found CUDA runtime {torch.version.cuda}")
+    if torch_build not in ("", "cpu"):
+        fail(f"expected CPU-only torch wheel, found torch {torch_version}")
+    if torchaudio_build not in ("", "cpu"):
+        fail(f"expected CPU-only torchaudio wheel, found torchaudio {torchaudio_version}")
+else:
+    if torch_build != target_build:
+        fail(f"expected torch wheel +{target_build}, found {torch_version}")
+    if torchaudio_build != target_build:
+        fail(f"expected torchaudio wheel +{target_build}, found {torchaudio_version}")
+    if torch.version.cuda is None:
+        fail(f"expected CUDA runtime {target_cuda}, but torch.version.cuda is None")
+
+    actual_cuda = str(torch.version.cuda)
+    actual_major_minor = ".".join(actual_cuda.split(".")[:2])
+    if actual_major_minor != target_cuda:
+        fail(f"expected CUDA runtime {target_cuda}.x, found {actual_cuda}")
 PY
 }
 
@@ -268,7 +344,7 @@ install_pytorch_deps() {
   pytorch_build_cuda_version "$build" >/dev/null
   index_url="${PYTORCH_INDEX_URL:-https://download.pytorch.org/whl/$build}"
 
-  if pytorch_matches_target "$build"; then
+  if pytorch_matches_target "$build" 1; then
     echo "PyTorch $PYTORCH_VERSION ($build) already installed. Skipping PyTorch install."
     return
   fi
@@ -282,7 +358,7 @@ install_pytorch_deps() {
     --index-url "$index_url"
 
   if ! pytorch_matches_target "$build"; then
-    echo "Error: PyTorch installed, but the CUDA build does not match the requested '$build' target." >&2
+    echo "Error: PyTorch installed, but verification failed for the requested '$build' target." >&2
     exit 1
   fi
 }
@@ -334,7 +410,7 @@ ensure_fma_small() {
 
 ensure_fma_medium() {
   if [ "$DOWNLOAD_MEDIUM" != "1" ]; then
-    echo "Skipping fma_medium download (set DOWNLOAD_MEDIUM=1 or DATASET_SIZE=both to enable, ~22 GB)."
+    echo "Skipping fma_medium download (set DOWNLOAD_MEDIUM=1, DATASET_SIZE=both, or request medium spectrograms to enable, ~22 GB)."
     return
   fi
 
@@ -422,10 +498,32 @@ ensure_python_env() {
   install_pytorch_deps
 }
 
+run_data_preprocessing() {
+  local effective_preprocess_for
+
+  if [ "$DOWNLOAD_SPECTROGRAMS" != "1" ]; then
+    effective_preprocess_for="none"
+    echo "Generating cleaned CSVs and feature CSVs without spectrograms."
+    echo "Set DOWNLOAD_SPECTROGRAMS=1 to also generate CNN/CRNN spectrograms."
+  elif [ "$PREPROCESS_FOR" = "none" ]; then
+    effective_preprocess_for="none"
+    echo "Generating cleaned CSVs and feature CSVs without spectrograms (PREPROCESS_FOR=none)..."
+  else
+    effective_preprocess_for="$PREPROCESS_FOR"
+    echo "Generating spectrograms for DATASET_SIZE=$DATASET_SIZE, PREPROCESS_FOR=$PREPROCESS_FOR..."
+  fi
+
+  DATASET_DIR="$DATASET_DIR" \
+  DATASET_SIZE="$DATASET_SIZE" \
+  PREPROCESS_FOR="$effective_preprocess_for" \
+    "$ENV_DIR/bin/python" "$PROJECT_ROOT/code/data_preprocessing.py"
+}
+
+ensure_fma_metadata
 ensure_fma_small
 ensure_fma_medium
-ensure_fma_metadata
 ensure_python_env
+run_data_preprocessing
 
 echo "Setup complete."
 echo "Activate the virtual environment with: source $ENV_DIR/bin/activate"
