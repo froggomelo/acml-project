@@ -157,7 +157,10 @@ PY
 
 python_has_venv() {
   local python_bin="$1"
-  "$python_bin" -m venv --help >/dev/null 2>&1
+  "$python_bin" - <<'PY' >/dev/null 2>&1
+import venv
+import ensurepip
+PY
 }
 
 sqlite3_headers_available() {
