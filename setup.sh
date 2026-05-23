@@ -230,14 +230,38 @@ libffi_available() {
   return 1
 }
 
-sqlite3_headers_available() {
+sqlite3_available() {
+  local cc_bin output_path cflags="" libs="-lsqlite3"
+
+  if [ -n "${CC:-}" ] && command -v "$CC" >/dev/null 2>&1; then
+    cc_bin="$CC"
+  elif command -v cc >/dev/null 2>&1; then
+    cc_bin="cc"
+  elif command -v gcc >/dev/null 2>&1; then
+    cc_bin="gcc"
+  else
+    return 1
+  fi
+
   if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists sqlite3 2>/dev/null; then
+    cflags="$(pkg-config --cflags sqlite3 2>/dev/null || true)"
+    libs="$(pkg-config --libs sqlite3 2>/dev/null || true)"
+    libs="${libs:--lsqlite3}"
+  fi
+
+  output_path="$SETUP_BUILD_DIR/sqlite3-check-$$"
+  if printf '%s\n' \
+    '#include <sqlite3.h>' \
+    '#if SQLITE_VERSION_NUMBER < 3015000' \
+    '#error "SQLite version is too old"' \
+    '#endif' \
+    'int main(void) { sqlite3 *db = 0; return sqlite3_open(":memory:", &db); }' \
+    | "$cc_bin" $cflags -x c - $libs -o "$output_path" >/dev/null 2>&1; then
+    rm -f "$output_path"
     return 0
   fi
-  local dir
-  for dir in /usr/include /usr/local/include "$LOCAL_PYTHON_DIR/include"; do
-    [ -f "$dir/sqlite3.h" ] && return 0
-  done
+
+  rm -f "$output_path"
   return 1
 }
 
@@ -249,12 +273,12 @@ build_sqlite_from_source() {
   local src_dir="$SETUP_BUILD_DIR/sqlite-autoconf-${version}"
   local url="https://www.sqlite.org/${year}/sqlite-autoconf-${version}.tar.gz"
 
-  if [ -f "$prefix/include/sqlite3.h" ]; then
+  if [ -f "$prefix/include/sqlite3.h" ] && [ -f "$prefix/lib/libsqlite3.a" ]; then
     echo "SQLite already built at $prefix. Skipping." >&2
     return
   fi
 
-  echo "SQLite3 development headers not found. Building SQLite from source (needed for Python's sqlite3 module)..." >&2
+  echo "SQLite3 development files not found or not linkable. Building SQLite from source (needed for Python's sqlite3 module)..." >&2
 
   if [ ! -f "$tarball" ]; then
     echo "Downloading SQLite $version source..." >&2
@@ -311,6 +335,8 @@ build_python_from_source() {
   local prefix="$LOCAL_PYTHON_DIR"
   local tarball src_dir url installed_bin
   local local_cppflags="" local_ldflags="" local_pkg_config_path=""
+  local sqlite_cflags="" sqlite_libs=""
+  local sqlite_header="" sqlite_include_dir=""
   local libffi_cflags="" libffi_libs=""
   local libffi_header="" libffi_include_dir=""
   local configure_env=()
@@ -346,7 +372,7 @@ build_python_from_source() {
   tar -xf "$tarball" -C "$SETUP_BUILD_DIR" >&2
 
   # Ensure SQLite and libffi are available so sqlite3 and ctypes get compiled in.
-  if ! sqlite3_headers_available; then
+  if ! sqlite3_available; then
     build_sqlite_from_source
   fi
 
@@ -357,6 +383,14 @@ build_python_from_source() {
   echo "Configuring Python $version (installing to $prefix)..." >&2
   if [ -d "$LOCAL_PYTHON_DIR/include" ]; then
     local_cppflags="-I$LOCAL_PYTHON_DIR/include"
+  fi
+  sqlite_header="$(find "$LOCAL_PYTHON_DIR/include" "$LOCAL_PYTHON_DIR/lib" -path '*/include/sqlite3.h' -print -quit 2>/dev/null || true)"
+  if [ -n "$sqlite_header" ]; then
+    sqlite_include_dir="${sqlite_header%/*}"
+    case " $local_cppflags " in
+      *" -I$sqlite_include_dir "*) ;;
+      *) local_cppflags="${local_cppflags:+$local_cppflags }-I$sqlite_include_dir" ;;
+    esac
   fi
   libffi_header="$(find "$LOCAL_PYTHON_DIR/include" "$LOCAL_PYTHON_DIR/lib" -path '*/include/ffi.h' -print -quit 2>/dev/null || true)"
   if [ -n "$libffi_header" ]; then
@@ -375,6 +409,15 @@ build_python_from_source() {
     local_pkg_config_path="$PKG_CONFIG_PATH"
   fi
 
+  if [ -n "$sqlite_header" ] && [ -f "$LOCAL_PYTHON_DIR/lib/libsqlite3.a" ]; then
+    if command -v pkg-config >/dev/null 2>&1 && [ -n "$local_pkg_config_path" ]; then
+      sqlite_cflags="$(PKG_CONFIG_PATH="$local_pkg_config_path" pkg-config --cflags sqlite3 2>/dev/null || true)"
+      sqlite_libs="$(PKG_CONFIG_PATH="$local_pkg_config_path" pkg-config --libs sqlite3 2>/dev/null || true)"
+    fi
+    sqlite_cflags="${sqlite_cflags:-$local_cppflags}"
+    sqlite_libs="${sqlite_libs:--L$LOCAL_PYTHON_DIR/lib -lsqlite3}"
+  fi
+
   if [ -n "$libffi_header" ] && [ -f "$LOCAL_PYTHON_DIR/lib/libffi.a" ]; then
     if command -v pkg-config >/dev/null 2>&1 && [ -n "$local_pkg_config_path" ]; then
       libffi_cflags="$(PKG_CONFIG_PATH="$local_pkg_config_path" pkg-config --cflags libffi 2>/dev/null || true)"
@@ -390,6 +433,12 @@ build_python_from_source() {
   )
   if [ -n "$local_pkg_config_path" ]; then
     configure_env+=("PKG_CONFIG_PATH=$local_pkg_config_path")
+  fi
+  if [ -n "$sqlite_cflags" ] || [ -n "$sqlite_libs" ]; then
+    configure_env+=(
+      "LIBSQLITE3_CFLAGS=$sqlite_cflags"
+      "LIBSQLITE3_LIBS=$sqlite_libs"
+    )
   fi
   if [ -n "$libffi_cflags" ] || [ -n "$libffi_libs" ]; then
     configure_env+=(
