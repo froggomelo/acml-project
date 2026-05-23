@@ -43,8 +43,9 @@ Open `.env` and set these variables:
 | `DATASET_SIZE` | yes | Which subset to use: `small` (8 k tracks, 8 genres), `medium` (25 k tracks, 16 genres), or `both`. Controls which audio files are downloaded and which subsets the preprocessing notebook processes. |
 | `DOWNLOAD_SPECTROGRAMS` | no | Set to `1` for setup to download the audio files selected by `DATASET_SIZE`. Default is `0` (only set up the Python environment, skip audio download). |
 | `PREPROCESS_FOR` | no | Which spectrogram formats the preprocessing notebook generates: `cnn` (10-second clips), `crnn` (20-second clips), `both`, or `none`. Default is `cnn`. |
+| `PYTHON_BIN` | no | Existing Python 3.10+ interpreter to use instead of auto-detection/source build. Useful when a managed Python already has `venv`, `ctypes`, and `sqlite3`. |
 
-This file is local to your machine; do not commit personal paths.
+This file is local to your checkout; do not commit personal paths.
 
 ## Setup
 
@@ -57,6 +58,7 @@ bash setup.sh
 This script:
 
 - creates a local Python virtual environment in `.venv/`
+- builds a local Python in `.python/` if no suitable Python 3.10+ interpreter is available; when needed, it also builds local SQLite/libffi for `sqlite3` and `ctypes`
 - installs Python dependencies (NumPy, pandas, scikit-learn, XGBoost, librosa, TensorFlow, Optuna, Jupyter, and others)
 - installs PyTorch and torchaudio (GPU build auto-detected from your NVIDIA driver; falls back to CPU)
 - downloads and extracts `fma_metadata/`
@@ -76,6 +78,7 @@ After `setup.sh` finishes, your project should look like this:
 |-- .env
 |-- .env.example
 |-- .venv/                     Local Python environment created by setup
+|-- .python/                   Local Python build, created only if setup cannot find a suitable interpreter
 |-- code/                      Notebooks and model code
 |-- fma_metadata/              Downloaded FMA metadata CSV files
 |-- fma_small/                 Downloaded when DOWNLOAD_SPECTROGRAMS=1 and DATASET_SIZE=small or both
@@ -94,6 +97,19 @@ If you need to force CPU-only PyTorch, run setup as:
 
 ```bash
 PYTORCH_BUILD=cpu bash setup.sh
+```
+
+If setup previously failed with `ModuleNotFoundError: No module named '_ctypes'`, remove the partial local environments and rerun:
+
+```bash
+rm -rf .venv .python
+bash setup.sh
+```
+
+Alternatively, use a known-good Python explicitly:
+
+```bash
+PYTHON_BIN=/path/to/python3 bash setup.sh
 ```
 
 If your dataset is stored somewhere outside the repository, set `DATASET_DIR` in `.env` before running setup. The notebooks also read it at runtime.

@@ -12,7 +12,10 @@ PYTORCH_INDEX_URL="${PYTORCH_INDEX_URL:-}"
 PYTHON_BUILD_VERSION="${PYTHON_BUILD_VERSION:-3.12.10}"
 SQLITE_BUILD_VERSION="${SQLITE_BUILD_VERSION:-3460100}"
 SQLITE_BUILD_YEAR="${SQLITE_BUILD_YEAR:-2024}"
+LIBFFI_BUILD_VERSION="${LIBFFI_BUILD_VERSION:-3.4.6}"
 LOCAL_PYTHON_DIR="$PROJECT_ROOT/.python"
+SETUP_BUILD_DIR="${SETUP_BUILD_DIR:-${TMPDIR:-/tmp}/acml-project-build}"
+mkdir -p "$SETUP_BUILD_DIR"
 
 read_env_file_value() {
   local key="$1"
@@ -137,6 +140,20 @@ require_command() {
   fi
 }
 
+make_jobs() {
+  if [ -n "${MAKE_JOBS:-}" ]; then
+    printf '%s\n' "$MAKE_JOBS"
+  elif command -v nproc >/dev/null 2>&1; then
+    nproc
+  elif command -v getconf >/dev/null 2>&1; then
+    getconf _NPROCESSORS_ONLN 2>/dev/null || printf '2\n'
+  elif command -v sysctl >/dev/null 2>&1; then
+    sysctl -n hw.ncpu 2>/dev/null || printf '2\n'
+  else
+    printf '2\n'
+  fi
+}
+
 python_meets_min_version() {
   local python_bin="$1"
 
@@ -163,6 +180,36 @@ import ensurepip
 PY
 }
 
+libffi_available() {
+  local cc_bin output_path
+
+  if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists libffi 2>/dev/null; then
+    return 0
+  fi
+
+  if [ -n "${CC:-}" ] && command -v "$CC" >/dev/null 2>&1; then
+    cc_bin="$CC"
+  elif command -v cc >/dev/null 2>&1; then
+    cc_bin="cc"
+  elif command -v gcc >/dev/null 2>&1; then
+    cc_bin="gcc"
+  else
+    return 1
+  fi
+
+  output_path="$SETUP_BUILD_DIR/libffi-check-$$"
+  if printf '%s\n' \
+    '#include <ffi.h>' \
+    'int main(void) { ffi_cif cif; return ffi_prep_cif(&cif, FFI_DEFAULT_ABI, 0, &ffi_type_void, 0); }' \
+    | "$cc_bin" -x c - -lffi -o "$output_path" >/dev/null 2>&1; then
+    rm -f "$output_path"
+    return 0
+  fi
+
+  rm -f "$output_path"
+  return 1
+}
+
 sqlite3_headers_available() {
   if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists sqlite3 2>/dev/null; then
     return 0
@@ -178,8 +225,8 @@ build_sqlite_from_source() {
   local prefix="$LOCAL_PYTHON_DIR"
   local version="$SQLITE_BUILD_VERSION"
   local year="$SQLITE_BUILD_YEAR"
-  local tarball="/tmp/sqlite-autoconf-${version}.tar.gz"
-  local src_dir="/tmp/sqlite-autoconf-${version}"
+  local tarball="$SETUP_BUILD_DIR/sqlite-autoconf-${version}.tar.gz"
+  local src_dir="$SETUP_BUILD_DIR/sqlite-autoconf-${version}"
   local url="https://www.sqlite.org/${year}/sqlite-autoconf-${version}.tar.gz"
 
   if [ -f "$prefix/include/sqlite3.h" ]; then
@@ -196,20 +243,57 @@ build_sqlite_from_source() {
 
   rm -rf "$src_dir"
   echo "Extracting SQLite source..." >&2
-  tar -xf "$tarball" -C /tmp >&2
+  tar -xf "$tarball" -C "$SETUP_BUILD_DIR" >&2
 
   echo "Building SQLite $version..." >&2
   (cd "$src_dir" && CFLAGS="-fPIC" ./configure --prefix="$prefix" \
-    --enable-static --disable-shared && make -j"$(nproc)" && make install) >&2
+    --enable-static --disable-shared && make -j"$(make_jobs)" && make install) >&2
 
   rm -rf "$src_dir" "$tarball"
   echo "SQLite built and installed at $prefix." >&2
+}
+
+build_libffi_from_source() {
+  local prefix="$LOCAL_PYTHON_DIR"
+  local version="$LIBFFI_BUILD_VERSION"
+  local tarball="$SETUP_BUILD_DIR/libffi-${version}.tar.gz"
+  local src_dir="$SETUP_BUILD_DIR/libffi-${version}"
+  local url="https://github.com/libffi/libffi/releases/download/v${version}/libffi-${version}.tar.gz"
+  local ffi_header
+
+  ffi_header="$(find "$prefix/include" "$prefix/lib" -path '*/include/ffi.h' -print -quit 2>/dev/null || true)"
+  if [ -n "$ffi_header" ] && [ -f "$prefix/lib/libffi.a" ]; then
+    echo "libffi already built at $prefix. Skipping." >&2
+    return
+  fi
+
+  echo "libffi development headers not found. Building libffi from source (needed for Python's ctypes module)..." >&2
+
+  if [ ! -f "$tarball" ]; then
+    echo "Downloading libffi $version source..." >&2
+    curl -L --fail --output "$tarball" "$url" >&2
+  fi
+
+  rm -rf "$src_dir"
+  echo "Extracting libffi source..." >&2
+  tar -xf "$tarball" -C "$SETUP_BUILD_DIR" >&2
+
+  echo "Building libffi $version..." >&2
+  (cd "$src_dir" && CFLAGS="-fPIC ${CFLAGS:-}" ./configure --prefix="$prefix" --libdir="$prefix/lib" \
+    --enable-static --disable-shared && make -j"$(make_jobs)" && make install) >&2
+
+  rm -rf "$src_dir" "$tarball"
+  echo "libffi built and installed at $prefix." >&2
 }
 
 build_python_from_source() {
   local version="$PYTHON_BUILD_VERSION"
   local prefix="$LOCAL_PYTHON_DIR"
   local tarball src_dir url installed_bin
+  local local_cppflags="" local_ldflags="" local_pkg_config_path=""
+  local libffi_cflags="" libffi_libs=""
+  local libffi_header="" libffi_include_dir=""
+  local configure_env=()
 
   # Remove any previous partial/broken build so we start clean.
   if [ -d "$prefix" ]; then
@@ -223,13 +307,13 @@ build_python_from_source() {
   for tool in gcc make curl tar; do
     if ! command -v "$tool" >/dev/null 2>&1; then
       echo "Error: '$tool' is required to build Python from source but was not found on PATH." >&2
-      echo "Install build tools and rerun: sudo apt install build-essential curl" >&2
+      echo "Install compiler/build tools, or set PYTHON_BIN to a working Python 3.10+ interpreter." >&2
       exit 1
     fi
   done
 
-  tarball="/tmp/Python-${version}.tar.xz"
-  src_dir="/tmp/Python-${version}"
+  tarball="$SETUP_BUILD_DIR/Python-${version}.tar.xz"
+  src_dir="$SETUP_BUILD_DIR/Python-${version}"
   url="https://www.python.org/ftp/python/${version}/Python-${version}.tar.xz"
 
   if [ ! -f "$tarball" ]; then
@@ -239,26 +323,68 @@ build_python_from_source() {
 
   rm -rf "$src_dir"
   echo "Extracting Python source..." >&2
-  tar -xf "$tarball" -C /tmp >&2
+  tar -xf "$tarball" -C "$SETUP_BUILD_DIR" >&2
 
-  # Ensure SQLite headers are available so Python's sqlite3 module gets compiled in.
-  local sqlite_cppflags="" sqlite_ldflags=""
+  # Ensure SQLite and libffi are available so sqlite3 and ctypes get compiled in.
   if ! sqlite3_headers_available; then
     build_sqlite_from_source
-    sqlite_cppflags="-I$LOCAL_PYTHON_DIR/include"
-    sqlite_ldflags="-L$LOCAL_PYTHON_DIR/lib"
+  fi
+
+  if ! libffi_available; then
+    build_libffi_from_source
   fi
 
   echo "Configuring Python $version (installing to $prefix)..." >&2
+  if [ -d "$LOCAL_PYTHON_DIR/include" ]; then
+    local_cppflags="-I$LOCAL_PYTHON_DIR/include"
+  fi
+  libffi_header="$(find "$LOCAL_PYTHON_DIR/include" "$LOCAL_PYTHON_DIR/lib" -path '*/include/ffi.h' -print -quit 2>/dev/null || true)"
+  if [ -n "$libffi_header" ]; then
+    libffi_include_dir="${libffi_header%/*}"
+    case " $local_cppflags " in
+      *" -I$libffi_include_dir "*) ;;
+      *) local_cppflags="${local_cppflags:+$local_cppflags }-I$libffi_include_dir" ;;
+    esac
+  fi
+  if [ -d "$LOCAL_PYTHON_DIR/lib" ]; then
+    local_ldflags="-L$LOCAL_PYTHON_DIR/lib"
+  fi
+  if [ -d "$LOCAL_PYTHON_DIR/lib/pkgconfig" ]; then
+    local_pkg_config_path="$LOCAL_PYTHON_DIR/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+  elif [ -n "${PKG_CONFIG_PATH:-}" ]; then
+    local_pkg_config_path="$PKG_CONFIG_PATH"
+  fi
+
+  if [ -n "$libffi_header" ] && [ -f "$LOCAL_PYTHON_DIR/lib/libffi.a" ]; then
+    if command -v pkg-config >/dev/null 2>&1 && [ -n "$local_pkg_config_path" ]; then
+      libffi_cflags="$(PKG_CONFIG_PATH="$local_pkg_config_path" pkg-config --cflags libffi 2>/dev/null || true)"
+      libffi_libs="$(PKG_CONFIG_PATH="$local_pkg_config_path" pkg-config --libs libffi 2>/dev/null || true)"
+    fi
+    libffi_cflags="${libffi_cflags:-$local_cppflags}"
+    libffi_libs="${libffi_libs:--L$LOCAL_PYTHON_DIR/lib -lffi}"
+  fi
+
+  configure_env=(
+    "CPPFLAGS=${local_cppflags:+$local_cppflags }${CPPFLAGS:-}"
+    "LDFLAGS=${local_ldflags:+$local_ldflags }${LDFLAGS:-}"
+  )
+  if [ -n "$local_pkg_config_path" ]; then
+    configure_env+=("PKG_CONFIG_PATH=$local_pkg_config_path")
+  fi
+  if [ -n "$libffi_cflags" ] || [ -n "$libffi_libs" ]; then
+    configure_env+=(
+      "LIBFFI_CFLAGS=$libffi_cflags"
+      "LIBFFI_LIBS=$libffi_libs"
+    )
+  fi
+
   # --disable-shared builds a self-contained binary that doesn't depend on
-  # libpython3.x.so being findable at runtime (avoids rpath issues on clusters).
-  (cd "$src_dir" && \
-    CPPFLAGS="${sqlite_cppflags:+$sqlite_cppflags }${CPPFLAGS:-}" \
-    LDFLAGS="${sqlite_ldflags:+$sqlite_ldflags }${LDFLAGS:-}" \
+  # libpython3.x.so being findable at runtime (avoids rpath issues on shared systems).
+  (cd "$src_dir" && env "${configure_env[@]}" \
     ./configure --prefix="$prefix" --with-ensurepip=install --disable-shared) >&2
 
   echo "Building Python $version..." >&2
-  (cd "$src_dir" && make -j"$(nproc)") >&2
+  (cd "$src_dir" && make -j"$(make_jobs)") >&2
 
   echo "Installing Python $version..." >&2
   (cd "$src_dir" && make install) >&2
@@ -337,10 +463,10 @@ PY
     echo "$output" >&2
     echo "This usually means Python was built without libffi or SQLite development headers." >&2
     echo "Install the missing headers, rebuild/reinstall Python, remove $ENV_DIR, and rerun setup.sh." >&2
-    echo "On Debian/Ubuntu: sudo apt install libffi-dev libsqlite3-dev" >&2
-    echo "On RHEL/Fedora:   sudo dnf install libffi-devel sqlite-devel" >&2
+    echo "If this is the repository-local Python, remove $LOCAL_PYTHON_DIR too so setup can rebuild it with local libffi/SQLite." >&2
+    echo "Install libffi and SQLite development headers if you want to use that Python build." >&2
     echo "If you use pyenv, reinstall the selected Python after installing the headers, for example: pyenv install --force \$(pyenv version-name)" >&2
-    echo "Or use a working system Python explicitly: PYTHON_BIN=/usr/bin/python3 bash setup.sh" >&2
+    echo "Or use a working Python explicitly: PYTHON_BIN=/path/to/python3 bash setup.sh" >&2
     exit 1
   fi
 }
@@ -638,9 +764,13 @@ ensure_python_env() {
 
   if [ -x "$ENV_DIR/bin/python" ]; then
     echo "Environment already present at $ENV_DIR. Skipping venv creation."
-    check_python_version "$ENV_DIR/bin/python"
-    check_python_required_stdlib "$ENV_DIR/bin/python"
-  else
+    if ! python_meets_min_version "$ENV_DIR/bin/python" || ! python_has_required_stdlib "$ENV_DIR/bin/python"; then
+      echo "Existing venv at $ENV_DIR uses an unsuitable Python. Removing and recreating..." >&2
+      rm -rf "$ENV_DIR"
+    fi
+  fi
+
+  if [ ! -x "$ENV_DIR/bin/python" ]; then
     if [ -d "$ENV_DIR" ]; then
       echo "Error: $ENV_DIR already exists but does not look like a Python virtual environment." >&2
       echo "Remove it and rerun setup.sh, or set ENV_DIR in the script to another path." >&2
@@ -656,10 +786,12 @@ ensure_python_env() {
     if ! "$python_bin" -m venv "$ENV_DIR"; then
       echo "Error: failed to create the virtual environment." >&2
       echo "The Python at $python_bin does not have venv support." >&2
-      echo "On Debian/Ubuntu: sudo apt install python3-venv  (or python3.XX-venv for a specific version)" >&2
-      echo "Or let setup build its own Python by unsetting PYTHON_BIN." >&2
+      echo "Install venv support for that Python, choose a different PYTHON_BIN, or let setup build its own Python by unsetting PYTHON_BIN." >&2
       exit 1
     fi
+  else
+    check_python_version "$ENV_DIR/bin/python"
+    check_python_required_stdlib "$ENV_DIR/bin/python"
   fi
 
   echo "Installing/updating Python dependencies in $ENV_DIR..."
