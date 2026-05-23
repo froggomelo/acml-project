@@ -15,6 +15,7 @@ warnings.filterwarnings("ignore")
 
 import numpy as np
 import pandas as pd
+import xgboost as xgb
 from xgboost import XGBClassifier
 from sklearn.metrics import confusion_matrix, classification_report, f1_score
 from sklearn.utils.class_weight import compute_sample_weight
@@ -41,6 +42,24 @@ RESULTS_DIR = MODEL_DIR / "results"
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 OUT_PREFIX = RESULTS_DIR / f"xgb_{SUBSET}"
 
+def _xgb_major_version():
+    try:
+        return int(xgb.__version__.split(".", 1)[0])
+    except (AttributeError, ValueError):
+        return 2
+
+def _xgb_backend_params():
+    if XGB_DEVICE == "cpu":
+        params = {"tree_method": "hist"}
+        if _xgb_major_version() >= 2:
+            params["device"] = "cpu"
+        return params
+
+    if _xgb_major_version() >= 2:
+        return {"tree_method": "hist", "device": XGB_DEVICE}
+
+    return {"tree_method": "gpu_hist", "predictor": "gpu_predictor"}
+
 # ─────────────────────────────────────────────
 # 1. DATA LOADING
 # ─────────────────────────────────────────────
@@ -60,6 +79,8 @@ def _load_dotenv():
             return
 
 _load_dotenv()
+XGB_DEVICE = os.environ.get("XGB_DEVICE", "cuda").strip().lower() or "cuda"
+XGB_BACKEND_PARAMS = _xgb_backend_params()
 
 if os.environ.get("PREPROCESSED_DIR"):
     PROCESSED_DIR = Path(os.environ["PREPROCESSED_DIR"]).expanduser().resolve()
@@ -100,6 +121,7 @@ X_test,  y_test  = _get_Xy(test_meta,  features)
 
 print(f"Classes ({num_classes}): {genre_names}")
 print(f"Data dir: {PROCESSED_DIR}")
+print(f"XGBoost backend: {XGB_BACKEND_PARAMS}")
 
 print(f"Train: {len(X_train)} | Val: {len(X_val)} | Test: {len(X_test)} | "
       f"Features: {X_train.shape[1]}")
@@ -123,14 +145,14 @@ print()
 # ─────────────────────────────────────────────
 
 def train_once(params, seed, max_rounds, patience):
+    model_params = {**params, **XGB_BACKEND_PARAMS}
     model = XGBClassifier(
-        **params,
+        **model_params,
         n_estimators          = max_rounds,
         early_stopping_rounds = patience,
         eval_metric           = "mlogloss",
         random_state          = seed,
         n_jobs                = -1,
-        tree_method           = "hist",
         verbosity             = 0,
     )
     model.fit(
