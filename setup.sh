@@ -14,8 +14,7 @@ SQLITE_BUILD_VERSION="${SQLITE_BUILD_VERSION:-3460100}"
 SQLITE_BUILD_YEAR="${SQLITE_BUILD_YEAR:-2024}"
 LIBFFI_BUILD_VERSION="${LIBFFI_BUILD_VERSION:-3.4.6}"
 LOCAL_PYTHON_DIR="$PROJECT_ROOT/.python"
-SETUP_BUILD_DIR="${SETUP_BUILD_DIR:-${TMPDIR:-/tmp}/acml-project-build}"
-mkdir -p "$SETUP_BUILD_DIR"
+SETUP_BUILD_DIR="${SETUP_BUILD_DIR:-}"
 
 read_env_file_value() {
   local key="$1"
@@ -48,6 +47,27 @@ if [ -n "$PYTHON_BIN" ]; then
   elif [[ "$PYTHON_BIN" == '${HOME}/'* ]]; then
     PYTHON_BIN="$HOME/${PYTHON_BIN:8}"
   fi
+fi
+if [ -z "$SETUP_BUILD_DIR" ]; then
+  SETUP_BUILD_DIR="$(read_env_file_value SETUP_BUILD_DIR || true)"
+fi
+if [ -n "$SETUP_BUILD_DIR" ]; then
+  if [[ "$SETUP_BUILD_DIR" == "~/"* ]]; then
+    SETUP_BUILD_DIR="$HOME/${SETUP_BUILD_DIR:2}"
+  elif [[ "$SETUP_BUILD_DIR" == '$HOME/'* ]]; then
+    SETUP_BUILD_DIR="$HOME/${SETUP_BUILD_DIR:6}"
+  elif [[ "$SETUP_BUILD_DIR" == '${HOME}/'* ]]; then
+    SETUP_BUILD_DIR="$HOME/${SETUP_BUILD_DIR:8}"
+  fi
+  if [[ "$SETUP_BUILD_DIR" != /* ]]; then
+    SETUP_BUILD_DIR="$PROJECT_ROOT/$SETUP_BUILD_DIR"
+  fi
+fi
+SETUP_BUILD_DIR="${SETUP_BUILD_DIR:-$PROJECT_ROOT/.setup-build}"
+mkdir -p "$SETUP_BUILD_DIR"
+
+if [ -z "${MAKE_JOBS:-}" ]; then
+  MAKE_JOBS="$(read_env_file_value MAKE_JOBS || true)"
 fi
 
 is_truthy() {
@@ -143,12 +163,12 @@ require_command() {
 make_jobs() {
   if [ -n "${MAKE_JOBS:-}" ]; then
     printf '%s\n' "$MAKE_JOBS"
-  elif command -v nproc >/dev/null 2>&1; then
-    nproc
   elif command -v getconf >/dev/null 2>&1; then
     getconf _NPROCESSORS_ONLN 2>/dev/null || printf '2\n'
   elif command -v sysctl >/dev/null 2>&1; then
     sysctl -n hw.ncpu 2>/dev/null || printf '2\n'
+  elif command -v nproc >/dev/null 2>&1; then
+    nproc
   else
     printf '2\n'
   fi

@@ -44,6 +44,8 @@ Open `.env` and set these variables:
 | `DOWNLOAD_SPECTROGRAMS` | no | Set to `1` for setup to download the audio files selected by `DATASET_SIZE`. Default is `0` (only set up the Python environment, skip audio download). |
 | `PREPROCESS_FOR` | no | Which spectrogram formats the preprocessing notebook generates: `cnn` (10-second clips), `crnn` (20-second clips), `both`, or `none`. Default is `cnn`. |
 | `PYTHON_BIN` | no | Existing Python 3.10+ interpreter to use instead of auto-detection/source build. Useful when a managed Python already has `venv`, `ctypes`, and `sqlite3`. |
+| `SETUP_BUILD_DIR` | no | Scratch directory for source builds. Defaults to `.setup-build/` inside the repository. |
+| `MAKE_JOBS` | no | Number of parallel jobs to use when compiling local dependencies. Defaults to auto-detection. |
 
 This file is local to your checkout; do not commit personal paths.
 

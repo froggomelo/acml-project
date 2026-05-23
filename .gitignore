@@ -1,6 +1,7 @@
 # Python cache and local environments
 .venv/
 .python/
+.setup-build/
 __pycache__/
 .ipynb_checkpoints/
 *.pyc
