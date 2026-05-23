@@ -91,20 +91,13 @@ case "$DATASET_SIZE" in
     ;;
 esac
 
-# Set DOWNLOAD_MEDIUM=1 to also download fma_medium (~22 GB).
-# DATASET_SIZE=both in .env also enables this automatically.
-# Example: DOWNLOAD_MEDIUM=1 bash setup.sh
-if [ -z "${DOWNLOAD_MEDIUM:-}" ]; then
-  DOWNLOAD_MEDIUM="$(read_env_file_value DOWNLOAD_MEDIUM || true)"
+if [ -z "${DOWNLOAD_SPECTROGRAMS:-}" ]; then
+  DOWNLOAD_SPECTROGRAMS="$(read_env_file_value DOWNLOAD_SPECTROGRAMS || true)"
 fi
-DOWNLOAD_MEDIUM="${DOWNLOAD_MEDIUM:-0}"
-if is_truthy "$DOWNLOAD_MEDIUM"; then
-  DOWNLOAD_MEDIUM=1
+if is_truthy "${DOWNLOAD_SPECTROGRAMS:-0}"; then
+  DOWNLOAD_SPECTROGRAMS=1
 else
-  DOWNLOAD_MEDIUM=0
-fi
-if [ "$DATASET_SIZE" = "both" ]; then
-  DOWNLOAD_MEDIUM=1
+  DOWNLOAD_SPECTROGRAMS=0
 fi
 
 CORE_DEPS=(
@@ -495,11 +488,6 @@ ensure_fma_small() {
 }
 
 ensure_fma_medium() {
-  if [ "$DOWNLOAD_MEDIUM" != "1" ]; then
-    echo "Skipping fma_medium download (set DOWNLOAD_MEDIUM=1 or DATASET_SIZE=both to enable, ~22 GB)."
-    return
-  fi
-
   if [ -f "$FMA_MEDIUM_SENTINEL" ]; then
     echo "FMA medium audio already present. Skipping download and extraction."
     return
@@ -589,8 +577,17 @@ ensure_python_env() {
 
 ensure_python_env
 ensure_fma_metadata
-ensure_fma_small
-ensure_fma_medium
+
+if [ "$DOWNLOAD_SPECTROGRAMS" = "1" ]; then
+  case "$DATASET_SIZE" in
+    small|both) ensure_fma_small ;;
+  esac
+  case "$DATASET_SIZE" in
+    medium|both) ensure_fma_medium ;;
+  esac
+else
+  echo "Skipping audio download (set DOWNLOAD_SPECTROGRAMS=1 in .env to download fma_small/ or fma_medium/)."
+fi
 
 echo "Setup complete."
 echo "Activate the virtual environment with: source $ENV_DIR/bin/activate"

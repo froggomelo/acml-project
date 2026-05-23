@@ -14,7 +14,7 @@ The normal workflow is:
 .
 |-- README.md                  Project overview and workflow notes
 |-- setup.sh                   Creates `.venv/`, installs dependencies, and downloads FMA data
-|-- .env.example               Template for local paths and preprocessing settings
+|-- .env.example               Template for local paths and dataset settings
 |-- code/
 |   |-- data_preprocessing.ipynb
 |   |-- random_forest/         Random Forest notebook, tuning helper, and outputs
@@ -26,15 +26,27 @@ The normal workflow is:
 
 Before running `setup.sh`, create `.env` from `.env.example` and set your local paths.
 
-## Setup
+## Configure `.env`
 
-Create your local environment file first:
+Create your local environment file:
 
 ```bash
 cp .env.example .env
 ```
 
-Open `.env` and set `DATASET_DIR` to the folder where the FMA data should live. Set `DATASET_SIZE=small`, `medium`, or `both`. Setup always generates the cleaned metadata CSVs and tabular feature CSVs used by Random Forest, MLP, and XGBoost. Set `DOWNLOAD_SPECTROGRAMS=1` only if setup should also generate spectrogram `.npy` files for CNN/CRNN. This file is local to your machine, so do not commit personal paths or secrets from it.
+Open `.env` and set these variables:
+
+| Variable | Required | Description |
+|---|---|---|
+| `DATASET_DIR` | yes | Directory where `fma_small/`, `fma_medium/`, and `fma_metadata/` live. Setup downloads data here. |
+| `PREPROCESSED_DIR` | no | Where cleaned CSVs and spectrograms are written. Defaults to `DATASET_DIR/fma_preprocessed`. |
+| `DATASET_SIZE` | yes | Which subset to use: `small` (8 k tracks, 8 genres), `medium` (25 k tracks, 16 genres), or `both`. Controls which audio files are downloaded and which subsets the preprocessing notebook processes. |
+| `DOWNLOAD_SPECTROGRAMS` | no | Set to `1` for setup to download the audio files selected by `DATASET_SIZE`. Default is `0` (only set up the Python environment, skip audio download). |
+| `PREPROCESS_FOR` | no | Which spectrogram formats the preprocessing notebook generates: `cnn` (10-second clips), `crnn` (20-second clips), `both`, or `none`. Default is `cnn`. |
+
+This file is local to your machine; do not commit personal paths.
+
+## Setup
 
 From the project root, run:
 
@@ -45,13 +57,13 @@ bash setup.sh
 This script:
 
 - creates a local Python virtual environment in `.venv/`
-- installs the main Python dependencies
-- installs PyTorch and torchaudio
-- downloads and extracts `fma_small/`
+- installs Python dependencies (NumPy, pandas, scikit-learn, XGBoost, librosa, TensorFlow, Optuna, Jupyter, and others)
+- installs PyTorch and torchaudio (GPU build auto-detected from your NVIDIA driver; falls back to CPU)
 - downloads and extracts `fma_metadata/`
-- downloads and extracts `fma_medium/` when `DATASET_SIZE=both`, `DOWNLOAD_MEDIUM=1`, or medium spectrograms are requested
-- generates cleaned CSVs and feature CSVs
-- generates spectrograms when `DOWNLOAD_SPECTROGRAMS=1`
+- downloads and extracts `fma_small/` when `DOWNLOAD_SPECTROGRAMS=1` and `DATASET_SIZE=small` or `both`
+- downloads and extracts `fma_medium/` when `DOWNLOAD_SPECTROGRAMS=1` and `DATASET_SIZE=medium` or `both`
+
+Setup does not run preprocessing and does not generate cleaned CSVs, feature CSVs, or spectrogram files. Run `code/data_preprocessing.ipynb` separately for that.
 
 ### Folder Structure After Setup
 
@@ -65,13 +77,12 @@ After `setup.sh` finishes, your project should look like this:
 |-- .env.example
 |-- .venv/                     Local Python environment created by setup
 |-- code/                      Notebooks and model code
-|-- fma_small/                 Downloaded FMA small audio files
 |-- fma_metadata/              Downloaded FMA metadata CSV files
-|-- fma_medium/                Downloaded only when medium audio is requested
-`-- fma_preprocessed/          Cleaned CSVs/features, plus optional spectrograms
+|-- fma_small/                 Downloaded when DOWNLOAD_SPECTROGRAMS=1 and DATASET_SIZE=small or both
+`-- fma_medium/                Downloaded when DOWNLOAD_SPECTROGRAMS=1 and DATASET_SIZE=medium or both
 ```
 
-If you set `DATASET_DIR` to another location, `fma_small/`, `fma_metadata/`, and optional `fma_medium/` will be created there instead of inside the repository. The downloaded zip files are removed after extraction.
+If you set `DATASET_DIR` to another location, the downloaded directories will be created there instead of inside the repository. The downloaded zip files are removed after extraction.
 
 After setup finishes, activate the environment:
 
@@ -85,31 +96,11 @@ If you need to force CPU-only PyTorch, run setup as:
 PYTORCH_BUILD=cpu bash setup.sh
 ```
 
-If your dataset is stored somewhere outside the repository, set `DATASET_DIR` before running the notebooks:
-
-```bash
-export DATASET_DIR=/path/to/dataset/root
-```
-
-You can also set the same value in `.env`; `setup.sh` reads it automatically.
-
-That directory should contain `fma_small/` and `fma_metadata/`.
+If your dataset is stored somewhere outside the repository, set `DATASET_DIR` in `.env` before running setup. The notebooks also read it at runtime.
 
 ## Data Preprocessing
 
-`setup.sh` runs the shared preprocessing script automatically after the downloads and environment setup:
-
-```bash
-code/data_preprocessing.py
-```
-
-When `DOWNLOAD_SPECTROGRAMS=0`, setup calls it with `PREPROCESS_FOR=none`, so it only writes the cleaned CSVs and tabular feature CSVs. You can also run it manually:
-
-```bash
-DATASET_SIZE=small PREPROCESS_FOR=none python code/data_preprocessing.py
-```
-
-Use `DATASET_SIZE=both` if you want both `small` and `medium` CSV outputs. You can also run the notebook version manually. Start Jupyter from the project root:
+`setup.sh` does not run preprocessing. Run preprocessing manually only when you need the cleaned CSVs, tabular feature CSVs, or spectrograms. Start Jupyter from the project root:
 
 ```bash
 jupyter notebook
@@ -121,7 +112,7 @@ Open and run:
 code/data_preprocessing.ipynb
 ```
 
-The preprocessing step creates `fma_preprocessed/`, including:
+The notebook reads `DATASET_DIR`, `PREPROCESSED_DIR`, `DATASET_SIZE`, and `PREPROCESS_FOR` from your `.env`. It creates `fma_preprocessed/` (or the directory set in `PREPROCESSED_DIR`), including:
 
 - `tracks_clean_small.csv`
 - `tracks_clean_small_training.csv`
@@ -136,12 +127,12 @@ The preprocessing step creates `fma_preprocessed/`, including:
 - `features_small.csv`
 - `features_medium.csv`
 - `spectrograms_small_10_manifest.csv` when `PREPROCESS_FOR=cnn` or `both`
-- `spectrograms_medium_10_manifest.csv` when `DATASET_SIZE=medium`/`both` and `PREPROCESS_FOR=cnn` or `both`
+- `spectrograms_medium_10_manifest.csv` when `DATASET_SIZE=medium` or `both` and `PREPROCESS_FOR=cnn` or `both`
 - `spectrograms_small_20_manifest.csv` when `PREPROCESS_FOR=crnn` or `both`
-- `spectrograms_medium_20_manifest.csv` when `DATASET_SIZE=medium`/`both` and `PREPROCESS_FOR=crnn` or `both`
+- `spectrograms_medium_20_manifest.csv` when `DATASET_SIZE=medium` or `both` and `PREPROCESS_FOR=crnn` or `both`
 - `spectrograms_<size>_<10|20>/`
 
-Run preprocessing before running any model. Random Forest, MLP, and XGBoost use the cleaned CSV files plus `features_<subset>.csv`. The CNN and CRNN use the saved spectrogram manifests and `.npy` spectrogram files.
+Run preprocessing before running any model. Random Forest, MLP, and XGBoost read the cleaned CSV files and `features_<subset>.csv`. The CNN and CRNN read the spectrogram manifest CSVs and the `.npy` spectrogram files. If you only need the tabular models, set `PREPROCESS_FOR=none` to skip spectrogram generation.
 
 ## Random Forest
 
@@ -163,27 +154,29 @@ The random forest notebook:
 - joins them with handcrafted audio features from `fma_preprocessed/features_<subset>.csv`
 - trains a random forest classifier
 - optionally runs the hyperparameter tuning grid
-- saves the best model checkpoint and evaluation outputs in `code/random_forest/`
+- saves the best model checkpoint and evaluation outputs in `code/random_forest/results/`
 
 Important outputs include:
 
-- `code/random_forest/best_random_forest_<subset>.pkl`
-- `code/random_forest/random_forest_tuning_results_<subset>.csv`
-- `code/random_forest/random_forest_tuning_results_<subset>.jsonl`
-- `code/random_forest/confusion_matrix_random_forest_<subset>.png`
+- `code/random_forest/results/best_random_forest_<subset>.pkl`
+- `code/random_forest/results/random_forest_tuning_results_<subset>.csv`
+- `code/random_forest/results/random_forest_tuning_results_<subset>.jsonl`
+- `code/random_forest/results/confusion_matrix_random_forest_<subset>.png`
 
 To regenerate tuning plots from an existing tuning CSV, run:
 
 ```bash
 python code/random_forest/generate_random_forest_tuning_graphs.py \
-  --csv code/random_forest/random_forest_tuning_results_medium.csv
+  --csv code/random_forest/results/random_forest_tuning_results_medium.csv
 ```
+
+By default, regenerated tuning plots are saved under `code/random_forest/results/tuning_graphs_<subset>/`.
 
 Use the small CSV instead if you trained the small subset:
 
 ```bash
 python code/random_forest/generate_random_forest_tuning_graphs.py \
-  --csv code/random_forest/random_forest_tuning_results_small.csv
+  --csv code/random_forest/results/random_forest_tuning_results_small.csv
 ```
 
 ## MLP And XGBoost
@@ -198,18 +191,38 @@ Required files for each subset are:
 - `genre_to_idx_<subset>.csv`
 - `features_<subset>.csv`
 
-Generate those files with:
+Generate those files by running `code/data_preprocessing.ipynb` with `DATASET_SIZE` set to the subset you need and `PREPROCESS_FOR=none` to skip spectrogram generation.
 
-```bash
-DATASET_SIZE=both PREPROCESS_FOR=none python code/data_preprocessing.py
+At the top of each script, set which dataset to run:
+
+```python
+SUBSET = "medium"  # or "small"
 ```
 
-Then choose `SUBSET = "small"` or `SUBSET = "medium"` near the top of each script and run:
+Then run:
 
 ```bash
 python code/MLP/MLP.py
 python code/XGBoost/XGBoost.py
 ```
+
+MLP outputs are saved to `code/MLP/results/`, including:
+
+- `mlp_<subset>_search_results.csv`
+- `mlp_<subset>_search_diagnostics.png`
+- `mlp_<subset>_search_ranked_trials.png`
+- `mlp_<subset>_final_seeds.csv`
+- `mlp_<subset>_final_curves.png`
+- `mlp_<subset>_final_confusion_matrix.png`
+- `mlp_<subset>_summary.json`
+
+XGBoost outputs are saved to `code/XGBoost/results/`, including:
+
+- `xgb_<subset>_final_seeds.csv`
+- `xgb_<subset>_final_curves.png`
+- `xgb_<subset>_final_confusion_matrix.png`
+- `xgb_<subset>_feature_importance.png`
+- `xgb_<subset>_summary.json`
 
 ## CNN
 
@@ -221,32 +234,15 @@ code/cnn/cnn.ipynb
 
 This notebook trains a deeper CNN with batch normalization and global average pooling from preprocessed spectrograms.
 
-By default, the notebook expects a medium spectrogram preprocessing folder:
+At the top of the notebook, set which dataset to run:
 
-```text
-fma_preprocessed_medium/
+```python
+DATASET_SIZE = "medium"  # or "small"
 ```
 
-If you want to point it at another preprocessing output, set these environment variables before starting Jupyter:
+The notebook reads `PREPROCESSED_DIR` from your `.env`; if it is not set it defaults to `DATASET_DIR/fma_preprocessed`.
 
-```bash
-export FMA_PROJECT_DIR=/path/to/project/root
-export PROCESSED_DIR=/path/to/preprocessed/folder
-export MANIFEST_PATH=/path/to/preprocessed/folder/spectrograms_manifest.csv
-export RESULTS_DIR=/path/to/cnn/results
-```
-
-For example, to run against the default small preprocessing output from `code/data_preprocessing.ipynb`, use:
-
-```bash
-export FMA_PROJECT_DIR=$(pwd)
-export PROCESSED_DIR=$(pwd)/fma_preprocessed
-export MANIFEST_PATH=$(pwd)/fma_preprocessed/spectrograms_manifest.csv
-export RESULTS_DIR=$(pwd)/results_cnn
-jupyter notebook
-```
-
-The CNN notebook supports these optional runtime settings:
+The CNN notebook supports these optional runtime settings (set in `.env` or as shell exports before launching Jupyter):
 
 ```bash
 export BATCH_SIZE=32
@@ -257,7 +253,7 @@ export PATIENCE=7
 export NUM_WORKERS=4
 ```
 
-Important outputs are written to `RESULTS_DIR`, including:
+Important outputs are written to `code/cnn/results_cnn_<subset>/` (e.g. `results_cnn_medium/`), including:
 
 - `best_model.pt`
 - `final_model.pt`
@@ -275,13 +271,14 @@ python code/cnn/train_cnn_experiments.py
 ```
 
 That script extracts its own cached log-mel dataset and runs several CNN experiments. It may require extra TensorFlow/Keras setup depending on your environment.
+Its experiment outputs are saved to `code/cnn/results_cnn_experiments/`.
 
 ## CRNN
 
 Open and run:
 
 ```text
-code/crnn/crnn.ipynb
+code/crnn/crnn_basic.ipynb
 ```
 
 Before running all cells, choose the dataset size near the top of the notebook:
@@ -314,17 +311,12 @@ WEIGHT_DECAY = 1e-5
 RUN_NAME = "spec_aug"
 ```
 
-Important outputs are written under:
+Outputs for each run are written under `code/crnn/results/<RUN_NAME>/`, including:
 
-```text
-results/<RUN_NAME>/
-```
-
-The notebook also appends summary metrics to:
-
-```text
-results/comparison_summary.csv
-```
+- `best_crnn.pth`
+- `accuracy_curve.png`
+- `loss_curve.png`
+- `confusion_matrix.png`
 
 If Optuna is not installed after setup, install it in the active environment:
 
@@ -350,12 +342,10 @@ Allocate an interactive shell:
 srun -N1 --ntasks=16 -p bigbatch --pty bash
 ```
 
-From the project root, load the `.env` values and activate the Python environment:
+From the project root, run the setup script and activate the Python environment:
 
 ```bash
-set -a
-source .env
-set +a
+bash setup.sh # Will install a compatible Python version
 source .venv/bin/activate
 ```
 
