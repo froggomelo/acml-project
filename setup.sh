@@ -187,20 +187,20 @@ build_sqlite_from_source() {
     return
   fi
 
-  echo "SQLite3 development headers not found. Building SQLite from source (needed for Python's sqlite3 module)..."
+  echo "SQLite3 development headers not found. Building SQLite from source (needed for Python's sqlite3 module)..." >&2
 
   if [ ! -f "$tarball" ]; then
-    echo "Downloading SQLite $version source..."
-    curl -L --fail --output "$tarball" "$url"
+    echo "Downloading SQLite $version source..." >&2
+    curl -L --fail --output "$tarball" "$url" >&2
   fi
 
   rm -rf "$src_dir"
-  echo "Extracting SQLite source..."
-  tar -xf "$tarball" -C /tmp
+  echo "Extracting SQLite source..." >&2
+  tar -xf "$tarball" -C /tmp >&2
 
-  echo "Building SQLite $version..."
+  echo "Building SQLite $version..." >&2
   (cd "$src_dir" && CFLAGS="-fPIC" ./configure --prefix="$prefix" \
-    --enable-static --disable-shared && make -j"$(nproc)" && make install)
+    --enable-static --disable-shared && make -j"$(nproc)" && make install) >&2
 
   rm -rf "$src_dir" "$tarball"
   echo "SQLite built and installed at $prefix." >&2
@@ -211,8 +211,14 @@ build_python_from_source() {
   local prefix="$LOCAL_PYTHON_DIR"
   local tarball src_dir url installed_bin
 
-  echo "No suitable Python >= 3.10 found. Building Python $version from source..."
-  echo "This may take several minutes."
+  # Remove any previous partial/broken build so we start clean.
+  if [ -d "$prefix" ]; then
+    echo "Removing previous (possibly partial) Python build at $prefix..." >&2
+    rm -rf "$prefix"
+  fi
+
+  echo "No suitable Python >= 3.10 found. Building Python $version from source..." >&2
+  echo "This may take several minutes." >&2
 
   for tool in gcc make curl tar; do
     if ! command -v "$tool" >/dev/null 2>&1; then
@@ -227,13 +233,13 @@ build_python_from_source() {
   url="https://www.python.org/ftp/python/${version}/Python-${version}.tar.xz"
 
   if [ ! -f "$tarball" ]; then
-    echo "Downloading Python $version source from python.org..."
-    curl -L --fail --output "$tarball" "$url"
+    echo "Downloading Python $version source from python.org..." >&2
+    curl -L --fail --output "$tarball" "$url" >&2
   fi
 
   rm -rf "$src_dir"
-  echo "Extracting Python source..."
-  tar -xf "$tarball" -C /tmp
+  echo "Extracting Python source..." >&2
+  tar -xf "$tarball" -C /tmp >&2
 
   # Ensure SQLite headers are available so Python's sqlite3 module gets compiled in.
   local sqlite_cppflags="" sqlite_ldflags=""
@@ -243,27 +249,37 @@ build_python_from_source() {
     sqlite_ldflags="-L$LOCAL_PYTHON_DIR/lib"
   fi
 
-  echo "Configuring Python $version (installing to $prefix)..."
+  echo "Configuring Python $version (installing to $prefix)..." >&2
+  # --disable-shared builds a self-contained binary that doesn't depend on
+  # libpython3.x.so being findable at runtime (avoids rpath issues on clusters).
   (cd "$src_dir" && \
     CPPFLAGS="${sqlite_cppflags:+$sqlite_cppflags }${CPPFLAGS:-}" \
     LDFLAGS="${sqlite_ldflags:+$sqlite_ldflags }${LDFLAGS:-}" \
-    ./configure --prefix="$prefix" --with-ensurepip=install)
+    ./configure --prefix="$prefix" --with-ensurepip=install --disable-shared) >&2
 
-  echo "Building Python $version..."
-  (cd "$src_dir" && make -j"$(nproc)")
+  echo "Building Python $version..." >&2
+  (cd "$src_dir" && make -j"$(nproc)") >&2
 
-  echo "Installing Python $version..."
-  (cd "$src_dir" && make install)
+  echo "Installing Python $version..." >&2
+  (cd "$src_dir" && make install) >&2
 
   rm -rf "$src_dir" "$tarball"
 
   installed_bin="$prefix/bin/python3"
   if [ ! -x "$installed_bin" ]; then
-    installed_bin="$(find "$prefix/bin" -name 'python3*' -executable 2>/dev/null | sort -V | tail -n1 || true)"
+    # Exclude config/debug scripts; match only the bare interpreter names.
+    installed_bin="$(find "$prefix/bin" -name 'python3*' -executable 2>/dev/null \
+      | grep -E '/(python3|python3\.[0-9]+)$' | sort -V | tail -n1 || true)"
   fi
 
   if [ -z "$installed_bin" ] || [ ! -x "$installed_bin" ]; then
     echo "Error: Python build completed but no executable was found in $prefix/bin." >&2
+    exit 1
+  fi
+
+  if ! python_meets_min_version "$installed_bin"; then
+    echo "Error: the built Python at $installed_bin failed to run correctly." >&2
+    echo "Try running it manually to diagnose: $installed_bin --version" >&2
     exit 1
   fi
 
@@ -280,8 +296,9 @@ find_python() {
     return
   fi
 
-  # Reuse a previously self-built Python
-  local_python="$(find "$LOCAL_PYTHON_DIR/bin" -name 'python3*' -executable 2>/dev/null | sort -V | tail -n1 || true)"
+  # Reuse a previously self-built Python (exclude config/debug scripts).
+  local_python="$(find "$LOCAL_PYTHON_DIR/bin" -name 'python3*' -executable 2>/dev/null \
+    | grep -E '/(python3|python3\.[0-9]+)$' | sort -V | tail -n1 || true)"
   if [ -n "$local_python" ] && python_meets_min_version "$local_python" && python_has_required_stdlib "$local_python" && python_has_venv "$local_python"; then
     echo "$local_python"
     return
@@ -611,6 +628,13 @@ ensure_fma_metadata() {
 ensure_python_env() {
   local python_bin
   local python_version
+
+  # A previous failed run may have left a partial venv (python symlink exists but
+  # pip is missing).  Detect and remove it so we can recreate cleanly.
+  if [ -x "$ENV_DIR/bin/python" ] && ! "$ENV_DIR/bin/python" -m pip --version >/dev/null 2>&1; then
+    echo "Existing venv at $ENV_DIR is missing pip (partial setup). Removing and recreating..." >&2
+    rm -rf "$ENV_DIR"
+  fi
 
   if [ -x "$ENV_DIR/bin/python" ]; then
     echo "Environment already present at $ENV_DIR. Skipping venv creation."
