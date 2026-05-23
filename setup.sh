@@ -35,6 +35,15 @@ read_env_file_value() {
 if [ -z "$PYTHON_BIN" ]; then
   PYTHON_BIN="$(read_env_file_value PYTHON_BIN || true)"
 fi
+if [ -n "$PYTHON_BIN" ]; then
+  if [[ "$PYTHON_BIN" == "~/"* ]]; then
+    PYTHON_BIN="$HOME/${PYTHON_BIN:2}"
+  elif [[ "$PYTHON_BIN" == '$HOME/'* ]]; then
+    PYTHON_BIN="$HOME/${PYTHON_BIN:6}"
+  elif [[ "$PYTHON_BIN" == '${HOME}/'* ]]; then
+    PYTHON_BIN="$HOME/${PYTHON_BIN:8}"
+  fi
+fi
 
 is_truthy() {
   case "${1,,}" in
@@ -142,6 +151,14 @@ raise SystemExit(0 if sys.version_info >= (3, 10) else 1)
 PY
 }
 
+python_has_required_stdlib() {
+  local python_bin="$1"
+
+  "$python_bin" - <<'PY' >/dev/null 2>&1
+import ctypes
+PY
+}
+
 build_python_from_source() {
   local version="$PYTHON_BUILD_VERSION"
   local prefix="$LOCAL_PYTHON_DIR"
@@ -207,13 +224,13 @@ find_python() {
 
   # Reuse a previously self-built Python
   local_python="$(find "$LOCAL_PYTHON_DIR/bin" -name 'python3*' -executable 2>/dev/null | sort -V | tail -n1 || true)"
-  if [ -n "$local_python" ] && python_meets_min_version "$local_python"; then
+  if [ -n "$local_python" ] && python_meets_min_version "$local_python" && python_has_required_stdlib "$local_python"; then
     echo "$local_python"
     return
   fi
 
-  for candidate in python python3.12 python3.11 python3.10 python3; do
-    if command -v "$candidate" >/dev/null 2>&1 && python_meets_min_version "$candidate"; then
+  for candidate in python python3.11 python3.12 python3.10 python3; do
+    if command -v "$candidate" >/dev/null 2>&1 && python_meets_min_version "$candidate" && python_has_required_stdlib "$candidate"; then
       echo "$candidate"
       return
     fi
