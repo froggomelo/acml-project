@@ -9,6 +9,8 @@ PYTORCH_VERSION="${PYTORCH_VERSION:-2.11.0}"
 TORCHAUDIO_VERSION="${TORCHAUDIO_VERSION:-$PYTORCH_VERSION}"
 PYTORCH_BUILD="${PYTORCH_BUILD:-auto}"
 PYTORCH_INDEX_URL="${PYTORCH_INDEX_URL:-}"
+PYTHON_BUILD_VERSION="${PYTHON_BUILD_VERSION:-3.12.10}"
+LOCAL_PYTHON_DIR="$PROJECT_ROOT/.python"
 
 read_env_file_value() {
   local key="$1"
@@ -140,8 +142,62 @@ raise SystemExit(0 if sys.version_info >= (3, 10) else 1)
 PY
 }
 
+build_python_from_source() {
+  local version="$PYTHON_BUILD_VERSION"
+  local prefix="$LOCAL_PYTHON_DIR"
+  local tarball src_dir url installed_bin
+
+  echo "No suitable Python >= 3.10 found. Building Python $version from source..."
+  echo "This may take several minutes."
+
+  for tool in gcc make curl tar; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      echo "Error: '$tool' is required to build Python from source but was not found on PATH." >&2
+      echo "Install build tools and rerun: sudo apt install build-essential curl" >&2
+      exit 1
+    fi
+  done
+
+  tarball="/tmp/Python-${version}.tar.xz"
+  src_dir="/tmp/Python-${version}"
+  url="https://www.python.org/ftp/python/${version}/Python-${version}.tar.xz"
+
+  if [ ! -f "$tarball" ]; then
+    echo "Downloading Python $version source from python.org..."
+    curl -L --fail --output "$tarball" "$url"
+  fi
+
+  rm -rf "$src_dir"
+  echo "Extracting Python source..."
+  tar -xf "$tarball" -C /tmp
+
+  echo "Configuring Python $version (installing to $prefix)..."
+  (cd "$src_dir" && ./configure --prefix="$prefix" --with-ensurepip=install)
+
+  echo "Building Python $version..."
+  (cd "$src_dir" && make -j"$(nproc)")
+
+  echo "Installing Python $version..."
+  (cd "$src_dir" && make install)
+
+  rm -rf "$src_dir" "$tarball"
+
+  installed_bin="$prefix/bin/python3"
+  if [ ! -x "$installed_bin" ]; then
+    installed_bin="$(find "$prefix/bin" -name 'python3*' -executable 2>/dev/null | sort -V | tail -n1 || true)"
+  fi
+
+  if [ -z "$installed_bin" ] || [ ! -x "$installed_bin" ]; then
+    echo "Error: Python build completed but no executable was found in $prefix/bin." >&2
+    exit 1
+  fi
+
+  echo "Python $version built and installed at $installed_bin." >&2
+  echo "$installed_bin"
+}
+
 find_python() {
-  local candidate
+  local candidate local_python
 
   if [ -n "$PYTHON_BIN" ]; then
     require_command "$PYTHON_BIN"
@@ -149,15 +205,21 @@ find_python() {
     return
   fi
 
-  for candidate in python python3.11 python3.12 python3.10 python3; do
+  # Reuse a previously self-built Python
+  local_python="$(find "$LOCAL_PYTHON_DIR/bin" -name 'python3*' -executable 2>/dev/null | sort -V | tail -n1 || true)"
+  if [ -n "$local_python" ] && python_meets_min_version "$local_python"; then
+    echo "$local_python"
+    return
+  fi
+
+  for candidate in python python3.12 python3.11 python3.10 python3; do
     if command -v "$candidate" >/dev/null 2>&1 && python_meets_min_version "$candidate"; then
       echo "$candidate"
       return
     fi
   done
 
-  echo "Error: Python 3 is not installed or not on PATH." >&2
-  exit 1
+  build_python_from_source
 }
 
 check_python_version() {
