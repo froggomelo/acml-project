@@ -18,6 +18,7 @@ Run on cluster using:
     python train_cnn_experiments.py
 """
 
+import ast
 import os
 import json
 import random
@@ -46,7 +47,29 @@ from sklearn.metrics import (
 import tensorflow as tf
 from tensorflow.keras import layers, models
 
-import utils
+
+def _fma_load(filepath):
+    tracks = pd.read_csv(filepath, index_col=0, header=[0, 1])
+    for col in [('track', 'tags'), ('album', 'tags'), ('artist', 'tags'),
+                ('track', 'genres'), ('track', 'genres_all')]:
+        if col in tracks.columns:
+            tracks[col] = tracks[col].map(ast.literal_eval)
+    for col in [('track', 'date_created'), ('track', 'date_recorded'),
+                ('album', 'date_created'), ('album', 'date_released'),
+                ('artist', 'date_created'), ('artist', 'born')]:
+        if col in tracks.columns:
+            tracks[col] = pd.to_datetime(tracks[col])
+    for col in [('track', 'license'), ('track', 'genre_top'), ('track', 'composer'),
+                ('track', 'lyricist'), ('track', 'language_code'), ('album', 'type'),
+                ('album', 'information'), ('artist', 'bio')]:
+        if col in tracks.columns:
+            tracks[col] = tracks[col].astype('category')
+    return tracks
+
+
+def _fma_get_audio_path(audio_dir, track_id):
+    tid_str = '{:06d}'.format(track_id)
+    return os.path.join(audio_dir, tid_str[:3], tid_str + '.mp3')
 
 
 # -----------------------------
@@ -61,12 +84,13 @@ tf.random.set_seed(SEED)
 # -----------------------------
 # 2. Project paths
 # -----------------------------
-PROJECT_DIR = Path.cwd()
-RESULTS_DIR = PROJECT_DIR / "results_cnn_experiments"
-CACHE_DIR = PROJECT_DIR / "cache"
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = SCRIPT_DIR.parents[1]
+RESULTS_DIR = SCRIPT_DIR / "results_cnn_experiments"
+CACHE_DIR = SCRIPT_DIR / "cache"
 
-RESULTS_DIR.mkdir(exist_ok=True)
-CACHE_DIR.mkdir(exist_ok=True)
+RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 AUDIO_DIR = os.environ.get("AUDIO_DIR", "./data/fma_small")
 METADATA_PATH = os.environ.get("FMA_METADATA", "./data/fma_metadata/tracks.csv")
@@ -143,7 +167,7 @@ def load_or_create_dataset(duration=15, n_mels=128):
     print("\nNo cache found. Extracting spectrograms from MP3 files...")
     print("This may take time, but it only needs to happen once.")
 
-    tracks = utils.load(METADATA_PATH)
+    tracks = _fma_load(METADATA_PATH)
     small = tracks[tracks["set", "subset"] <= "small"].copy()
     small = small[small["track", "genre_top"].notna()]
 
@@ -159,7 +183,7 @@ def load_or_create_dataset(duration=15, n_mels=128):
 
     for track_id, row in tqdm(small.iterrows(), total=len(small)):
         try:
-            file_path = utils.get_audio_path(AUDIO_DIR, track_id)
+            file_path = _fma_get_audio_path(AUDIO_DIR, track_id)
 
             if not os.path.exists(file_path):
                 failed_files.append(track_id)

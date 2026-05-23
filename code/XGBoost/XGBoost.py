@@ -8,6 +8,7 @@ Workflow:
 """
 
 from pathlib import Path
+import os
 import warnings
 import json
 warnings.filterwarnings("ignore")
@@ -35,43 +36,70 @@ FINAL_SEEDS       = [42, 0, 1]   # set to [42] for single-seed eval
 FINAL_MAX_ROUNDS  = 1500
 FINAL_PATIENCE    = 30
 
-OUT_PREFIX = f"xgb_{SUBSET}"
+MODEL_DIR = Path(__file__).resolve().parent
+RESULTS_DIR = MODEL_DIR / "results"
+RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+OUT_PREFIX = RESULTS_DIR / f"xgb_{SUBSET}"
 
 # ─────────────────────────────────────────────
 # 1. DATA LOADING
 # ─────────────────────────────────────────────
 
-PROJECT_CANDIDATES = [Path.cwd(), Path.cwd().parent]
-for candidate in PROJECT_CANDIDATES:
-    processed_dir = candidate / "fma_preprocessed"
-    if processed_dir.exists():
-        PROCESSED_DIR = processed_dir.resolve()
-        break
-else:
-    raise FileNotFoundError("fma_preprocessed/ not found. Run preprocess.py first.")
-
 print(f"Loading preprocessed data ({SUBSET}) ...")
 
-genre_map   = pd.read_csv(PROCESSED_DIR / f"genre_to_idx_{SUBSET}.csv")
-genre_names = genre_map.sort_values("label")["genre"].tolist()
+def _load_dotenv():
+    for base in [Path(__file__).resolve().parents[1], Path.cwd()]:
+        p = base / ".env"
+        if p.exists():
+            with open(p) as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, _, v = line.partition("=")
+                        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+            return
+
+_load_dotenv()
+
+if os.environ.get("PREPROCESSED_DIR"):
+    PROCESSED_DIR = Path(os.environ["PREPROCESSED_DIR"]).expanduser().resolve()
+elif os.environ.get("DATASET_DIR"):
+    PROCESSED_DIR = Path(os.environ["DATASET_DIR"]).expanduser().resolve() / "fma_preprocessed"
+else:
+    PROCESSED_DIR = Path(__file__).resolve().parents[2] / "fma_preprocessed"
+
+if not PROCESSED_DIR.is_dir():
+    raise FileNotFoundError(
+        f"fma_preprocessed/ not found at {PROCESSED_DIR}.\n"
+        "Run data_preprocessing.ipynb first."
+    )
+
+genre_names = (
+    pd.read_csv(PROCESSED_DIR / f"genre_to_idx_{SUBSET}.csv")
+    .sort_values("label")["genre"]
+    .tolist()
+)
 num_classes = len(genre_names)
-print(f"Classes ({num_classes}): {genre_names}")
 
 train_meta = pd.read_csv(PROCESSED_DIR / f"tracks_clean_{SUBSET}_training.csv")
 val_meta   = pd.read_csv(PROCESSED_DIR / f"tracks_clean_{SUBSET}_validation.csv")
 test_meta  = pd.read_csv(PROCESSED_DIR / f"tracks_clean_{SUBSET}_test.csv")
-features   = pd.read_csv(PROCESSED_DIR / f"features_{SUBSET}.csv",
-                         index_col=0, header=[0, 1, 2])
 
-def get_X_y(meta_df):
-    ids = meta_df["track_id"].values
-    X   = features.loc[features.index.isin(ids)].reindex(ids).values.astype("float32")
-    y   = meta_df["label"].values.astype("int64")
+features = pd.read_csv(PROCESSED_DIR / f"features_{SUBSET}.csv", index_col=0, header=[0, 1, 2])
+features.index = features.index.astype(int)
+
+def _get_Xy(meta, feats):
+    ids = meta["track_id"].astype(int).to_numpy()
+    X = np.nan_to_num(feats.reindex(ids).to_numpy(dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+    y = meta["label"].to_numpy(dtype=np.int64)
     return X, y
 
-X_train, y_train = get_X_y(train_meta)
-X_val,   y_val   = get_X_y(val_meta)
-X_test,  y_test  = get_X_y(test_meta)
+X_train, y_train = _get_Xy(train_meta, features)
+X_val,   y_val   = _get_Xy(val_meta,   features)
+X_test,  y_test  = _get_Xy(test_meta,  features)
+
+print(f"Classes ({num_classes}): {genre_names}")
+print(f"Data dir: {PROCESSED_DIR}")
 
 print(f"Train: {len(X_train)} | Val: {len(X_val)} | Test: {len(X_test)} | "
       f"Features: {X_train.shape[1]}")
