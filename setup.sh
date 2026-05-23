@@ -273,7 +273,7 @@ build_sqlite_from_source() {
   local src_dir="$SETUP_BUILD_DIR/sqlite-autoconf-${version}"
   local url="https://www.sqlite.org/${year}/sqlite-autoconf-${version}.tar.gz"
 
-  if [ -f "$prefix/include/sqlite3.h" ] && [ -f "$prefix/lib/libsqlite3.a" ]; then
+  if [ -f "$prefix/include/sqlite3.h" ] && { [ -f "$prefix/lib/libsqlite3.so" ] || [ -f "$prefix/lib/libsqlite3.dylib" ] || [ -f "$prefix/lib/libsqlite3.a" ]; }; then
     echo "SQLite already built at $prefix. Skipping." >&2
     return
   fi
@@ -291,7 +291,7 @@ build_sqlite_from_source() {
 
   echo "Building SQLite $version..." >&2
   (cd "$src_dir" && CFLAGS="-fPIC" ./configure --prefix="$prefix" \
-    --enable-static --disable-shared && make -j"$(make_jobs)" && make install) >&2
+    --enable-static --enable-shared && make -j"$(make_jobs)" && make install) >&2
 
   rm -rf "$src_dir" "$tarball"
   echo "SQLite built and installed at $prefix." >&2
@@ -337,6 +337,7 @@ build_python_from_source() {
   local local_cppflags="" local_ldflags="" local_pkg_config_path=""
   local sqlite_cflags="" sqlite_libs=""
   local sqlite_header="" sqlite_include_dir=""
+  local sqlite_rpath_flag=""
   local libffi_cflags="" libffi_libs=""
   local libffi_header="" libffi_include_dir=""
   local configure_env=()
@@ -402,6 +403,8 @@ build_python_from_source() {
   fi
   if [ -d "$LOCAL_PYTHON_DIR/lib" ]; then
     local_ldflags="-L$LOCAL_PYTHON_DIR/lib"
+    sqlite_rpath_flag="-Wl,-rpath,$LOCAL_PYTHON_DIR/lib"
+    local_ldflags="$local_ldflags $sqlite_rpath_flag"
   fi
   if [ -d "$LOCAL_PYTHON_DIR/lib/pkgconfig" ]; then
     local_pkg_config_path="$LOCAL_PYTHON_DIR/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
@@ -409,13 +412,13 @@ build_python_from_source() {
     local_pkg_config_path="$PKG_CONFIG_PATH"
   fi
 
-  if [ -n "$sqlite_header" ] && [ -f "$LOCAL_PYTHON_DIR/lib/libsqlite3.a" ]; then
-    if command -v pkg-config >/dev/null 2>&1 && [ -n "$local_pkg_config_path" ]; then
-      sqlite_cflags="$(PKG_CONFIG_PATH="$local_pkg_config_path" pkg-config --cflags sqlite3 2>/dev/null || true)"
-      sqlite_libs="$(PKG_CONFIG_PATH="$local_pkg_config_path" pkg-config --libs sqlite3 2>/dev/null || true)"
+  if [ -n "$sqlite_header" ]; then
+    sqlite_cflags="-I$sqlite_include_dir"
+    if [ -f "$LOCAL_PYTHON_DIR/lib/libsqlite3.so" ] || [ -f "$LOCAL_PYTHON_DIR/lib/libsqlite3.dylib" ]; then
+      sqlite_libs="-L$LOCAL_PYTHON_DIR/lib $sqlite_rpath_flag -lsqlite3"
+    elif [ -f "$LOCAL_PYTHON_DIR/lib/libsqlite3.a" ]; then
+      sqlite_libs="-L$LOCAL_PYTHON_DIR/lib -lsqlite3 -ldl -lpthread -lm"
     fi
-    sqlite_cflags="${sqlite_cflags:-$local_cppflags}"
-    sqlite_libs="${sqlite_libs:--L$LOCAL_PYTHON_DIR/lib -lsqlite3}"
   fi
 
   if [ -n "$libffi_header" ] && [ -f "$LOCAL_PYTHON_DIR/lib/libffi.a" ]; then
@@ -446,6 +449,12 @@ build_python_from_source() {
       "LIBFFI_LIBS=$libffi_libs"
     )
   fi
+  if [ -d "$LOCAL_PYTHON_DIR/lib" ]; then
+    configure_env+=(
+      "LD_LIBRARY_PATH=$LOCAL_PYTHON_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+      "DYLD_LIBRARY_PATH=$LOCAL_PYTHON_DIR/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+    )
+  fi
 
   # --disable-shared builds a self-contained binary that doesn't depend on
   # libpython3.x.so being findable at runtime (avoids rpath issues on shared systems).
@@ -453,10 +462,21 @@ build_python_from_source() {
     ./configure --prefix="$prefix" --with-ensurepip=install --disable-shared) >&2
 
   echo "Building Python $version..." >&2
-  (cd "$src_dir" && make -j"$(make_jobs)") >&2
+  (cd "$src_dir" && env "${configure_env[@]}" make -j"$(make_jobs)") >&2
+
+  if ! (cd "$src_dir" && env "${configure_env[@]}" ./python - <<'PY'
+import ctypes
+import sqlite3
+PY
+  ); then
+    echo "Error: the just-built Python is still missing ctypes or sqlite3 before installation." >&2
+    echo "Relevant build diagnostics from $src_dir/config.log:" >&2
+    grep -Ei 'sqlite|libffi|_sqlite|_ctypes|error' "$src_dir/config.log" | tail -n 80 >&2 || true
+    exit 1
+  fi
 
   echo "Installing Python $version..." >&2
-  (cd "$src_dir" && make install) >&2
+  (cd "$src_dir" && env "${configure_env[@]}" make install) >&2
 
   rm -rf "$src_dir" "$tarball"
 
