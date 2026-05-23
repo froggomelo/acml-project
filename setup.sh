@@ -30,6 +30,10 @@ read_env_file_value() {
   printf '%s\n' "$line"
 }
 
+if [ -z "$PYTHON_BIN" ]; then
+  PYTHON_BIN="$(read_env_file_value PYTHON_BIN || true)"
+fi
+
 is_truthy() {
   case "${1,,}" in
     1|true|yes|y|on) return 0 ;;
@@ -76,24 +80,6 @@ case "$DATASET_SIZE" in
     ;;
 esac
 
-# Set DOWNLOAD_SPECTROGRAMS=1 to generate spectrogram .npy files during setup.
-# PREPROCESS_FOR chooses which formats: cnn, crnn, both, or none.
-if [ -z "${DOWNLOAD_SPECTROGRAMS:-}" ]; then
-  DOWNLOAD_SPECTROGRAMS="$(read_env_file_value DOWNLOAD_SPECTROGRAMS || true)"
-fi
-DOWNLOAD_SPECTROGRAMS="${DOWNLOAD_SPECTROGRAMS:-0}"
-if is_truthy "$DOWNLOAD_SPECTROGRAMS"; then
-  DOWNLOAD_SPECTROGRAMS=1
-else
-  DOWNLOAD_SPECTROGRAMS=0
-fi
-
-if [ -z "${PREPROCESS_FOR:-}" ]; then
-  PREPROCESS_FOR="$(read_env_file_value PREPROCESS_FOR || true)"
-fi
-PREPROCESS_FOR="${PREPROCESS_FOR:-both}"
-PREPROCESS_FOR="${PREPROCESS_FOR,,}"
-
 # Set DOWNLOAD_MEDIUM=1 to also download fma_medium (~22 GB).
 # DATASET_SIZE=both in .env also enables this automatically.
 # Example: DOWNLOAD_MEDIUM=1 bash setup.sh
@@ -108,11 +94,6 @@ else
 fi
 if [ "$DATASET_SIZE" = "both" ]; then
   DOWNLOAD_MEDIUM=1
-fi
-if [ "$DOWNLOAD_SPECTROGRAMS" = "1" ] && [ "$PREPROCESS_FOR" != "none" ]; then
-  case "$DATASET_SIZE" in
-    medium|both) DOWNLOAD_MEDIUM=1 ;;
-  esac
 fi
 
 CORE_DEPS=(
@@ -134,6 +115,8 @@ CORE_DEPS=(
   notebook
   ipywidgets
   ipython
+  tensorflow
+  optuna
 )
 
 NOTEBOOK_DEPS=(
@@ -148,6 +131,15 @@ require_command() {
   fi
 }
 
+python_meets_min_version() {
+  local python_bin="$1"
+
+  "$python_bin" - <<'PY' >/dev/null 2>&1
+import sys
+raise SystemExit(0 if sys.version_info >= (3, 10) else 1)
+PY
+}
+
 find_python() {
   local candidate
 
@@ -157,8 +149,8 @@ find_python() {
     return
   fi
 
-  for candidate in python3.12 python3.11 python3.10 python3; do
-    if command -v "$candidate" >/dev/null 2>&1; then
+  for candidate in python python3.11 python3.12 python3.10 python3; do
+    if command -v "$candidate" >/dev/null 2>&1 && python_meets_min_version "$candidate"; then
       echo "$candidate"
       return
     fi
@@ -171,13 +163,28 @@ find_python() {
 check_python_version() {
   local python_bin="$1"
 
-  if ! "$python_bin" - <<'PY'
-import sys
-raise SystemExit(0 if sys.version_info >= (3, 10) else 1)
-PY
-  then
+  if ! python_meets_min_version "$python_bin"; then
     echo "Error: Python 3.10 or newer is required." >&2
-    echo "Set PYTHON_BIN to a compatible interpreter, for example: PYTHON_BIN=python3.12 bash setup.sh" >&2
+    echo "Set PYTHON_BIN to a compatible interpreter, for example: PYTHON_BIN=\$HOME/opt/python-3.11.9/bin/python3.11 bash setup.sh" >&2
+    exit 1
+  fi
+}
+
+check_python_required_stdlib() {
+  local python_bin="$1"
+  local output
+
+  if ! output="$("$python_bin" - <<'PY' 2>&1
+import ctypes
+PY
+  )"; then
+    echo "Error: Python at $python_bin cannot import the standard-library ctypes module." >&2
+    echo "$output" >&2
+    echo "This usually means Python was built without libffi development headers." >&2
+    echo "Install libffi development headers, rebuild/reinstall Python, remove $ENV_DIR, and rerun setup.sh." >&2
+    echo "On Debian/Ubuntu: sudo apt install libffi-dev" >&2
+    echo "If you use pyenv, reinstall the selected Python after installing libffi-dev, for example: pyenv install --force \$(pyenv version-name)" >&2
+    echo "Or use a working system Python explicitly: PYTHON_BIN=/usr/bin/python3 bash setup.sh" >&2
     exit 1
   fi
 }
@@ -410,7 +417,7 @@ ensure_fma_small() {
 
 ensure_fma_medium() {
   if [ "$DOWNLOAD_MEDIUM" != "1" ]; then
-    echo "Skipping fma_medium download (set DOWNLOAD_MEDIUM=1, DATASET_SIZE=both, or request medium spectrograms to enable, ~22 GB)."
+    echo "Skipping fma_medium download (set DOWNLOAD_MEDIUM=1 or DATASET_SIZE=both to enable, ~22 GB)."
     return
   fi
 
@@ -473,6 +480,8 @@ ensure_python_env() {
 
   if [ -x "$ENV_DIR/bin/python" ]; then
     echo "Environment already present at $ENV_DIR. Skipping venv creation."
+    check_python_version "$ENV_DIR/bin/python"
+    check_python_required_stdlib "$ENV_DIR/bin/python"
   else
     if [ -d "$ENV_DIR" ]; then
       echo "Error: $ENV_DIR already exists but does not look like a Python virtual environment." >&2
@@ -482,6 +491,7 @@ ensure_python_env() {
 
     python_bin="$(find_python)"
     check_python_version "$python_bin"
+    check_python_required_stdlib "$python_bin"
     python_version="$("$python_bin" --version 2>&1)"
 
     echo "Creating Python virtual environment at $ENV_DIR using $python_version..."
@@ -498,32 +508,10 @@ ensure_python_env() {
   install_pytorch_deps
 }
 
-run_data_preprocessing() {
-  local effective_preprocess_for
-
-  if [ "$DOWNLOAD_SPECTROGRAMS" != "1" ]; then
-    effective_preprocess_for="none"
-    echo "Generating cleaned CSVs and feature CSVs without spectrograms."
-    echo "Set DOWNLOAD_SPECTROGRAMS=1 to also generate CNN/CRNN spectrograms."
-  elif [ "$PREPROCESS_FOR" = "none" ]; then
-    effective_preprocess_for="none"
-    echo "Generating cleaned CSVs and feature CSVs without spectrograms (PREPROCESS_FOR=none)..."
-  else
-    effective_preprocess_for="$PREPROCESS_FOR"
-    echo "Generating spectrograms for DATASET_SIZE=$DATASET_SIZE, PREPROCESS_FOR=$PREPROCESS_FOR..."
-  fi
-
-  DATASET_DIR="$DATASET_DIR" \
-  DATASET_SIZE="$DATASET_SIZE" \
-  PREPROCESS_FOR="$effective_preprocess_for" \
-    "$ENV_DIR/bin/python" "$PROJECT_ROOT/code/data_preprocessing.py"
-}
-
+ensure_python_env
 ensure_fma_metadata
 ensure_fma_small
 ensure_fma_medium
-ensure_python_env
-run_data_preprocessing
 
 echo "Setup complete."
 echo "Activate the virtual environment with: source $ENV_DIR/bin/activate"

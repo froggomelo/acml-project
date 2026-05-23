@@ -9,8 +9,8 @@ __pycache__/
 
 # Large datasets
 fma_small/*
-
 fma_metadata/*
+fma_medium/*
 
 # Model artifacts and archives
 *.pt

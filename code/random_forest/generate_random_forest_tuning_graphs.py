@@ -21,7 +21,7 @@ import pandas as pd
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-RANDOM_FOREST_DIR = SCRIPT_DIR / "random_forest"
+RANDOM_FOREST_DIR = SCRIPT_DIR
 DEFAULT_CSV_PATH = RANDOM_FOREST_DIR / "random_forest_tuning_results_small.csv"
 
 REQUIRED_COLUMNS = {
