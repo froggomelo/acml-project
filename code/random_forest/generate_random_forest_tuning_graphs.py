@@ -22,7 +22,8 @@ import pandas as pd
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 RANDOM_FOREST_DIR = SCRIPT_DIR
-DEFAULT_CSV_PATH = RANDOM_FOREST_DIR / "random_forest_tuning_results_small.csv"
+RESULTS_DIR = RANDOM_FOREST_DIR / "results"
+DEFAULT_CSV_PATH = RESULTS_DIR / "random_forest_tuning_results_small.csv"
 
 REQUIRED_COLUMNS = {
     "n_estimators",
@@ -94,7 +95,7 @@ def prepare_results(csv_path: Path) -> pd.DataFrame:
 
 def default_output_dir(csv_path: Path) -> Path:
     subset = infer_subset(csv_path)
-    return RANDOM_FOREST_DIR / f"tuning_graphs_{subset}"
+    return RESULTS_DIR / f"tuning_graphs_{subset}"
 
 
 def save_plot(fig: plt.Figure, output_path: Path) -> None:
