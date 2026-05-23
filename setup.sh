@@ -10,18 +10,35 @@ TORCHAUDIO_VERSION="${TORCHAUDIO_VERSION:-$PYTORCH_VERSION}"
 PYTORCH_BUILD="${PYTORCH_BUILD:-auto}"
 PYTORCH_INDEX_URL="${PYTORCH_INDEX_URL:-}"
 
+# Directory where FMA zips are downloaded and extracted.
+# Defaults to the project root; override with DATASET_DIR=... bash setup.sh
+# or by setting DATASET_DIR in your .env file.
+if [ -z "${DATASET_DIR:-}" ] && [ -f "$PROJECT_ROOT/.env" ]; then
+  DATASET_DIR="$(grep -E '^DATASET_DIR=' "$PROJECT_ROOT/.env" | head -n1 | cut -d= -f2- | tr -d '"'"'")"
+fi
+DATASET_DIR="${DATASET_DIR:-$PROJECT_ROOT}"
+mkdir -p "$DATASET_DIR"
+
 FMA_SMALL_URL="https://os.unil.cloud.switch.ch/fma/fma_small.zip"
+FMA_MEDIUM_URL="https://os.unil.cloud.switch.ch/fma/fma_medium.zip"
 FMA_METADATA_URL="https://os.unil.cloud.switch.ch/fma/fma_metadata.zip"
 
-FMA_SMALL_ZIP="$PROJECT_ROOT/fma_small.zip"
-FMA_METADATA_ZIP="$PROJECT_ROOT/fma_metadata.zip"
+FMA_SMALL_ZIP="$DATASET_DIR/fma_small.zip"
+FMA_MEDIUM_ZIP="$DATASET_DIR/fma_medium.zip"
+FMA_METADATA_ZIP="$DATASET_DIR/fma_metadata.zip"
 
-FMA_SMALL_SENTINEL="$PROJECT_ROOT/fma_small/000/000002.mp3"
+FMA_SMALL_SENTINEL="$DATASET_DIR/fma_small/000/000002.mp3"
+# Track 000003.mp3 is subset=medium and lives only in fma_medium/.
+FMA_MEDIUM_SENTINEL="$DATASET_DIR/fma_medium/000/000003.mp3"
 FMA_METADATA_SENTINELS=(
-  "$PROJECT_ROOT/fma_metadata/tracks.csv"
-  "$PROJECT_ROOT/fma_metadata/features.csv"
-  "$PROJECT_ROOT/fma_metadata/genres.csv"
+  "$DATASET_DIR/fma_metadata/tracks.csv"
+  "$DATASET_DIR/fma_metadata/features.csv"
+  "$DATASET_DIR/fma_metadata/genres.csv"
 )
+
+# Set DOWNLOAD_MEDIUM=1 to also download fma_medium (~22 GB).
+# Example: DOWNLOAD_MEDIUM=1 bash setup.sh
+DOWNLOAD_MEDIUM="${DOWNLOAD_MEDIUM:-0}"
 
 CORE_DEPS=(
   numpy
@@ -258,8 +275,29 @@ ensure_fma_small() {
   download_file "$FMA_SMALL_URL" "$FMA_SMALL_ZIP"
 
   echo "Extracting $(basename "$FMA_SMALL_ZIP")..."
-  unzip -q "$FMA_SMALL_ZIP" -d "$PROJECT_ROOT"
+  unzip -q "$FMA_SMALL_ZIP" -d "$DATASET_DIR"
   rm -f "$FMA_SMALL_ZIP"
+}
+
+ensure_fma_medium() {
+  if [ "$DOWNLOAD_MEDIUM" != "1" ]; then
+    echo "Skipping fma_medium download (set DOWNLOAD_MEDIUM=1 to enable, ~22 GB)."
+    return
+  fi
+
+  if [ -f "$FMA_MEDIUM_SENTINEL" ]; then
+    echo "FMA medium audio already present. Skipping download."
+    return
+  fi
+
+  require_command curl
+  require_command unzip
+
+  download_file "$FMA_MEDIUM_URL" "$FMA_MEDIUM_ZIP"
+
+  echo "Extracting $(basename "$FMA_MEDIUM_ZIP")..."
+  unzip -q "$FMA_MEDIUM_ZIP" -d "$DATASET_DIR"
+  rm -f "$FMA_MEDIUM_ZIP"
 }
 
 ensure_fma_metadata() {
@@ -284,7 +322,7 @@ ensure_fma_metadata() {
   download_file "$FMA_METADATA_URL" "$FMA_METADATA_ZIP"
 
   echo "Extracting $(basename "$FMA_METADATA_ZIP")..."
-  unzip -q "$FMA_METADATA_ZIP" -d "$PROJECT_ROOT"
+  unzip -q "$FMA_METADATA_ZIP" -d "$DATASET_DIR"
   rm -f "$FMA_METADATA_ZIP"
 }
 
@@ -320,6 +358,7 @@ ensure_python_env() {
 }
 
 ensure_fma_small
+ensure_fma_medium
 ensure_fma_metadata
 ensure_python_env
 
