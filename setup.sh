@@ -10,6 +10,8 @@ TORCHAUDIO_VERSION="${TORCHAUDIO_VERSION:-$PYTORCH_VERSION}"
 PYTORCH_BUILD="${PYTORCH_BUILD:-auto}"
 PYTORCH_INDEX_URL="${PYTORCH_INDEX_URL:-}"
 PYTHON_BUILD_VERSION="${PYTHON_BUILD_VERSION:-3.12.10}"
+SQLITE_BUILD_VERSION="${SQLITE_BUILD_VERSION:-3460100}"
+SQLITE_BUILD_YEAR="${SQLITE_BUILD_YEAR:-2024}"
 LOCAL_PYTHON_DIR="$PROJECT_ROOT/.python"
 
 read_env_file_value() {
@@ -149,7 +151,51 @@ python_has_required_stdlib() {
 
   "$python_bin" - <<'PY' >/dev/null 2>&1
 import ctypes
+import sqlite3
 PY
+}
+
+sqlite3_headers_available() {
+  if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists sqlite3 2>/dev/null; then
+    return 0
+  fi
+  local dir
+  for dir in /usr/include /usr/local/include "$LOCAL_PYTHON_DIR/include"; do
+    [ -f "$dir/sqlite3.h" ] && return 0
+  done
+  return 1
+}
+
+build_sqlite_from_source() {
+  local prefix="$LOCAL_PYTHON_DIR"
+  local version="$SQLITE_BUILD_VERSION"
+  local year="$SQLITE_BUILD_YEAR"
+  local tarball="/tmp/sqlite-autoconf-${version}.tar.gz"
+  local src_dir="/tmp/sqlite-autoconf-${version}"
+  local url="https://www.sqlite.org/${year}/sqlite-autoconf-${version}.tar.gz"
+
+  if [ -f "$prefix/include/sqlite3.h" ]; then
+    echo "SQLite already built at $prefix. Skipping." >&2
+    return
+  fi
+
+  echo "SQLite3 development headers not found. Building SQLite from source (needed for Python's sqlite3 module)..."
+
+  if [ ! -f "$tarball" ]; then
+    echo "Downloading SQLite $version source..."
+    curl -L --fail --output "$tarball" "$url"
+  fi
+
+  rm -rf "$src_dir"
+  echo "Extracting SQLite source..."
+  tar -xf "$tarball" -C /tmp
+
+  echo "Building SQLite $version..."
+  (cd "$src_dir" && CFLAGS="-fPIC" ./configure --prefix="$prefix" \
+    --enable-static --disable-shared && make -j"$(nproc)" && make install)
+
+  rm -rf "$src_dir" "$tarball"
+  echo "SQLite built and installed at $prefix." >&2
 }
 
 build_python_from_source() {
@@ -181,8 +227,19 @@ build_python_from_source() {
   echo "Extracting Python source..."
   tar -xf "$tarball" -C /tmp
 
+  # Ensure SQLite headers are available so Python's sqlite3 module gets compiled in.
+  local sqlite_cppflags="" sqlite_ldflags=""
+  if ! sqlite3_headers_available; then
+    build_sqlite_from_source
+    sqlite_cppflags="-I$LOCAL_PYTHON_DIR/include"
+    sqlite_ldflags="-L$LOCAL_PYTHON_DIR/lib"
+  fi
+
   echo "Configuring Python $version (installing to $prefix)..."
-  (cd "$src_dir" && ./configure --prefix="$prefix" --with-ensurepip=install)
+  (cd "$src_dir" && \
+    CPPFLAGS="${sqlite_cppflags:+$sqlite_cppflags }${CPPFLAGS:-}" \
+    LDFLAGS="${sqlite_ldflags:+$sqlite_ldflags }${LDFLAGS:-}" \
+    ./configure --prefix="$prefix" --with-ensurepip=install)
 
   echo "Building Python $version..."
   (cd "$src_dir" && make -j"$(nproc)")
@@ -248,14 +305,16 @@ check_python_required_stdlib() {
 
   if ! output="$("$python_bin" - <<'PY' 2>&1
 import ctypes
+import sqlite3
 PY
   )"; then
-    echo "Error: Python at $python_bin cannot import the standard-library ctypes module." >&2
+    echo "Error: Python at $python_bin is missing required standard-library modules (ctypes or sqlite3)." >&2
     echo "$output" >&2
-    echo "This usually means Python was built without libffi development headers." >&2
-    echo "Install libffi development headers, rebuild/reinstall Python, remove $ENV_DIR, and rerun setup.sh." >&2
-    echo "On Debian/Ubuntu: sudo apt install libffi-dev" >&2
-    echo "If you use pyenv, reinstall the selected Python after installing libffi-dev, for example: pyenv install --force \$(pyenv version-name)" >&2
+    echo "This usually means Python was built without libffi or SQLite development headers." >&2
+    echo "Install the missing headers, rebuild/reinstall Python, remove $ENV_DIR, and rerun setup.sh." >&2
+    echo "On Debian/Ubuntu: sudo apt install libffi-dev libsqlite3-dev" >&2
+    echo "On RHEL/Fedora:   sudo dnf install libffi-devel sqlite-devel" >&2
+    echo "If you use pyenv, reinstall the selected Python after installing the headers, for example: pyenv install --force \$(pyenv version-name)" >&2
     echo "Or use a working system Python explicitly: PYTHON_BIN=/usr/bin/python3 bash setup.sh" >&2
     exit 1
   fi
