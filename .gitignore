@@ -4,6 +4,7 @@ __pycache__/
 .ipynb_checkpoints/
 *.pyc
 *.csv
+*.jsonl
 *.npy
 
 # Large datasets
