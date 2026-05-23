@@ -155,6 +155,11 @@ import sqlite3
 PY
 }
 
+python_has_venv() {
+  local python_bin="$1"
+  "$python_bin" -m venv --help >/dev/null 2>&1
+}
+
 sqlite3_headers_available() {
   if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists sqlite3 2>/dev/null; then
     return 0
@@ -274,13 +279,13 @@ find_python() {
 
   # Reuse a previously self-built Python
   local_python="$(find "$LOCAL_PYTHON_DIR/bin" -name 'python3*' -executable 2>/dev/null | sort -V | tail -n1 || true)"
-  if [ -n "$local_python" ] && python_meets_min_version "$local_python" && python_has_required_stdlib "$local_python"; then
+  if [ -n "$local_python" ] && python_meets_min_version "$local_python" && python_has_required_stdlib "$local_python" && python_has_venv "$local_python"; then
     echo "$local_python"
     return
   fi
 
   for candidate in python python3.11 python3.12 python3.10 python3; do
-    if command -v "$candidate" >/dev/null 2>&1 && python_meets_min_version "$candidate" && python_has_required_stdlib "$candidate"; then
+    if command -v "$candidate" >/dev/null 2>&1 && python_meets_min_version "$candidate" && python_has_required_stdlib "$candidate" && python_has_venv "$candidate"; then
       echo "$candidate"
       return
     fi
@@ -623,7 +628,9 @@ ensure_python_env() {
     echo "Creating Python virtual environment at $ENV_DIR using $python_version..."
     if ! "$python_bin" -m venv "$ENV_DIR"; then
       echo "Error: failed to create the virtual environment." >&2
-      echo "On Debian/Ubuntu, install venv support with: sudo apt install python3-venv" >&2
+      echo "The Python at $python_bin does not have venv support." >&2
+      echo "On Debian/Ubuntu: sudo apt install python3-venv  (or python3.XX-venv for a specific version)" >&2
+      echo "Or let setup build its own Python by unsetting PYTHON_BIN." >&2
       exit 1
     fi
   fi
