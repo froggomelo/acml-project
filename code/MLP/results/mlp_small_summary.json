@@ -1,0 +1,24 @@
+{
+  "subset": "small",
+  "n_trials": 40,
+  "best_params": {
+    "lr": 0.008390644655999823,
+    "weight_decay": 0.0005317923335242431,
+    "dropout": 0.37988285352429985,
+    "hidden_dim": 512,
+    "depth": 3,
+    "batch_size": 256
+  },
+  "search_best_val_acc": 0.5862500071525574,
+  "final_seeds": [
+    0,
+    1,
+    2,
+    3,
+    4
+  ],
+  "final_val_acc_mean": 0.5599999785423279,
+  "final_val_acc_std": 0.009519713173483357,
+  "final_test_acc_mean": 0.47625,
+  "final_test_acc_std": 0.0061871843353822915
+}

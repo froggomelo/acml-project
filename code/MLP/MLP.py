@@ -1,12 +1,13 @@
 """
 Workflow:
-  1. Load preprocessed data from fma_preprocessed/
+  1. Load preprocessed data from fma_preprocessed/ (small or medium)
   2. Random search over hyperparameters (N_TRIALS)
   3. Retrain best config with multiple seeds for robust test evaluation
   4. Save all trial results and diagnostic plots for the report
 """
 
 from pathlib import Path
+import os
 import warnings
 import json
 import random
@@ -26,6 +27,8 @@ import seaborn as sns
 # CONFIG
 # ─────────────────────────────────────────────
 
+SUBSET = "medium"              # "small" or "medium" — must exist in fma_preprocessed/
+
 N_TRIALS         = 40           # random-search trials
 SEARCH_EPOCHS    = 50           # max epochs per trial (early stopping caps this)
 SEARCH_PATIENCE  = 8            # tighter patience during search to save time
@@ -35,41 +38,70 @@ FINAL_SEEDS      = [0, 1, 2, 3, 4]   # final retraining seeds for mean ± std
 FINAL_EPOCHS     = 80
 FINAL_PATIENCE   = 15
 
+MODEL_DIR = Path(__file__).resolve().parent
+RESULTS_DIR = MODEL_DIR / "results"
+RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+OUT_PREFIX = RESULTS_DIR / f"mlp_{SUBSET}"
+
 # ─────────────────────────────────────────────
 # 1. DATA LOADING
 # ─────────────────────────────────────────────
 
-PROJECT_CANDIDATES = [Path.cwd(), Path.cwd().parent]
-for candidate in PROJECT_CANDIDATES:
-    processed_dir = candidate / "fma_preprocessed"
-    if processed_dir.exists():
-        PROCESSED_DIR = processed_dir.resolve()
-        break
+print(f"Loading preprocessed data ({SUBSET}) ...")
+
+def _load_dotenv():
+    for base in [Path(__file__).resolve().parents[1], Path.cwd()]:
+        p = base / ".env"
+        if p.exists():
+            with open(p) as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, _, v = line.partition("=")
+                        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+            return
+
+_load_dotenv()
+
+if os.environ.get("PREPROCESSED_DIR"):
+    PROCESSED_DIR = Path(os.environ["PREPROCESSED_DIR"]).expanduser().resolve()
+elif os.environ.get("DATASET_DIR"):
+    PROCESSED_DIR = Path(os.environ["DATASET_DIR"]).expanduser().resolve() / "fma_preprocessed"
 else:
-    raise FileNotFoundError("fma_preprocessed/ not found. Run preprocess.py first.")
+    PROCESSED_DIR = Path(__file__).resolve().parents[2] / "fma_preprocessed"
 
-print("Loading preprocessed data ...")
+if not PROCESSED_DIR.is_dir():
+    raise FileNotFoundError(
+        f"fma_preprocessed/ not found at {PROCESSED_DIR}.\n"
+        "Run data_preprocessing.ipynb first."
+    )
 
-genre_map   = pd.read_csv(PROCESSED_DIR / "genre_to_idx_small.csv")
-genre_names = genre_map.sort_values("label")["genre"].tolist()
+genre_names = (
+    pd.read_csv(PROCESSED_DIR / f"genre_to_idx_{SUBSET}.csv")
+    .sort_values("label")["genre"]
+    .tolist()
+)
 num_classes = len(genre_names)
-print(f"Classes ({num_classes}): {genre_names}")
 
-train_meta = pd.read_csv(PROCESSED_DIR / "tracks_clean_small_training.csv")
-val_meta   = pd.read_csv(PROCESSED_DIR / "tracks_clean_small_validation.csv")
-test_meta  = pd.read_csv(PROCESSED_DIR / "tracks_clean_small_test.csv")
-features   = pd.read_csv(PROCESSED_DIR / "features_small.csv",
-                         index_col=0, header=[0, 1, 2])
+train_meta = pd.read_csv(PROCESSED_DIR / f"tracks_clean_{SUBSET}_training.csv")
+val_meta   = pd.read_csv(PROCESSED_DIR / f"tracks_clean_{SUBSET}_validation.csv")
+test_meta  = pd.read_csv(PROCESSED_DIR / f"tracks_clean_{SUBSET}_test.csv")
 
-def get_X_y(meta_df):
-    ids = meta_df["track_id"].values
-    X   = features.loc[features.index.isin(ids)].reindex(ids).values.astype("float32")
-    y   = meta_df["label"].values.astype("int64")
+_features = pd.read_csv(PROCESSED_DIR / f"features_{SUBSET}.csv", index_col=0, header=[0, 1, 2])
+_features.index = _features.index.astype(int)
+
+def _get_Xy(meta, feats):
+    ids = meta["track_id"].astype(int).to_numpy()
+    X = np.nan_to_num(feats.reindex(ids).to_numpy(dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+    y = meta["label"].to_numpy(dtype=np.int64)
     return X, y
 
-X_train, y_train = get_X_y(train_meta)
-X_val,   y_val   = get_X_y(val_meta)
-X_test,  y_test  = get_X_y(test_meta)
+X_train, y_train = _get_Xy(train_meta, _features)
+X_val,   y_val   = _get_Xy(val_meta,   _features)
+X_test,  y_test  = _get_Xy(test_meta,  _features)
+
+print(f"Classes ({num_classes}): {genre_names}")
+print(f"Data dir: {PROCESSED_DIR}")
 
 scaler  = StandardScaler()
 X_train = scaler.fit_transform(X_train)
@@ -261,7 +293,7 @@ def run_random_search(n_trials):
     return df
 
 search_results = run_random_search(N_TRIALS)
-search_results.to_csv("mlp_search_results.csv", index=False)
+search_results.to_csv(f"{OUT_PREFIX}_search_results.csv", index=False)
 
 print("═" * 60)
 print("  TOP 5 CONFIGS BY VALIDATION ACCURACY")
@@ -295,9 +327,9 @@ for ax, param in zip(axes, ["lr", "weight_decay", "dropout",
     ax.set_ylabel("Val Accuracy")
     ax.set_title(f"Val Acc vs {param}")
     ax.grid(True, alpha=0.3)
-plt.suptitle("Random Search — Hyperparameter vs Validation Accuracy", y=1.00)
+plt.suptitle(f"MLP ({SUBSET}) — Random Search: Hyperparameter vs Validation Accuracy", y=1.00)
 plt.tight_layout()
-plt.savefig("mlp_search_diagnostics.png", dpi=150, bbox_inches="tight")
+plt.savefig(f"{OUT_PREFIX}_search_diagnostics.png", dpi=150, bbox_inches="tight")
 plt.show()
 
 plt.figure(figsize=(10, 4))
@@ -306,10 +338,10 @@ plt.axhline(search_results["val_acc"].max(), color="red", linestyle="--",
             label=f"Best: {search_results['val_acc'].max():.4f}")
 plt.xlabel("Trial (ranked by val acc)")
 plt.ylabel("Val Accuracy")
-plt.title("Random Search — Trial Scores (sorted)")
+plt.title(f"MLP ({SUBSET}) — Random Search Trial Scores (sorted)")
 plt.legend()
 plt.tight_layout()
-plt.savefig("mlp_search_ranked_trials.png", dpi=150)
+plt.savefig(f"{OUT_PREFIX}_search_ranked_trials.png", dpi=150)
 plt.show()
 
 # ─────────────────────────────────────────────
@@ -350,7 +382,7 @@ for seed in FINAL_SEEDS:
         best_seed_preds   = test_preds
 
 final_df = pd.DataFrame(final_results)
-final_df.to_csv("mlp_final_seeds.csv", index=False)
+final_df.to_csv(f"{OUT_PREFIX}_final_seeds.csv", index=False)
 
 mean_test = final_df["test_acc"].mean()
 std_test  = final_df["test_acc"].std()
@@ -372,22 +404,22 @@ fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
 ax1.plot(best_seed_history["train_loss"], label="Train Loss")
 ax1.plot(best_seed_history["val_loss"],   label="Val Loss")
 ax1.set_xlabel("Epoch"); ax1.set_ylabel("Loss")
-ax1.set_title("Best-config training — Loss"); ax1.legend()
+ax1.set_title(f"MLP ({SUBSET}) — Best-config training Loss"); ax1.legend()
 ax2.plot(best_seed_history["val_acc"], color="green", label="Val Accuracy")
 ax2.set_xlabel("Epoch"); ax2.set_ylabel("Accuracy")
-ax2.set_title("Best-config training — Accuracy"); ax2.legend()
+ax2.set_title(f"MLP ({SUBSET}) — Best-config training Accuracy"); ax2.legend()
 plt.tight_layout()
-plt.savefig("mlp_final_curves.png", dpi=150)
+plt.savefig(f"{OUT_PREFIX}_final_curves.png", dpi=150)
 plt.show()
 
 cm = confusion_matrix(y_test, best_seed_preds)
 plt.figure(figsize=(8, 6))
 sns.heatmap(cm, annot=True, fmt="d",
             xticklabels=genre_names, yticklabels=genre_names, cmap="magma")
-plt.title("MLP — Confusion Matrix (Test, best seed)")
+plt.title(f"MLP ({SUBSET}) — Confusion Matrix (Test, best seed)")
 plt.ylabel("True"); plt.xlabel("Predicted")
 plt.tight_layout()
-plt.savefig("mlp_final_confusion_matrix.png", dpi=150)
+plt.savefig(f"{OUT_PREFIX}_final_confusion_matrix.png", dpi=150)
 plt.show()
 
 print("\nClassification report (best seed):")
@@ -398,6 +430,7 @@ print(classification_report(y_test, best_seed_preds, target_names=genre_names))
 # ─────────────────────────────────────────────
 
 summary = {
+    "subset":              SUBSET,
     "n_trials":            N_TRIALS,
     "best_params":         best_params,
     "search_best_val_acc": float(search_results["val_acc"].max()),
@@ -407,14 +440,14 @@ summary = {
     "final_test_acc_mean": float(mean_test),
     "final_test_acc_std":  float(std_test),
 }
-with open("mlp_summary.json", "w") as f:
+with open(f"{OUT_PREFIX}_summary.json", "w") as f:
     json.dump(summary, f, indent=2)
 
 print("\nSaved:")
-for fn in [
-    "mlp_search_results.csv", "mlp_search_diagnostics.png",
-    "mlp_search_ranked_trials.png", "mlp_final_seeds.csv",
-    "mlp_final_curves.png", "mlp_final_confusion_matrix.png",
-    "mlp_summary.json",
+for suffix in [
+    "search_results.csv", "search_diagnostics.png",
+    "search_ranked_trials.png", "final_seeds.csv",
+    "final_curves.png", "final_confusion_matrix.png",
+    "summary.json",
 ]:
-    print(f"  {fn}")
+    print(f"  {OUT_PREFIX}_{suffix}")
