@@ -371,10 +371,10 @@ build_python_from_source() {
   echo "Extracting Python source..." >&2
   tar -xf "$tarball" -C "$SETUP_BUILD_DIR" >&2
 
-  # Ensure SQLite and libffi are available so sqlite3 and ctypes get compiled in.
-  if ! sqlite3_available; then
-    build_sqlite_from_source
-  fi
+  # Always use a known local SQLite for source-built Python. Some systems expose
+  # enough SQLite to compile a tiny program but not enough for CPython's _sqlite3
+  # extension discovery.
+  build_sqlite_from_source
 
   if ! libffi_available; then
     build_libffi_from_source
