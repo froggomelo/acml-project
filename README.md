@@ -293,24 +293,27 @@ Its experiment outputs are saved to `code/cnn/results_cnn_experiments/`.
 
 ## CRNN
 
-Open and run:
+Two CRNN notebooks are available:
 
-```text
-code/crnn/crnn_basic.ipynb
-```
+| Notebook | Description |
+|---|---|
+| `code/crnn/crnn_basic.ipynb` | Baseline CRNN — random-crops a fixed window from the full 20-second spectrogram each epoch |
+| `code/crnn/crnn_divide_and_conquer.ipynb` | Divide-and-conquer CRNN — splits each spectrogram into overlapping snippets and aggregates predictions per track |
 
-Before running all cells, choose the dataset size near the top of the notebook:
+Open and run either notebook. Before running all cells, choose the dataset size near the top:
 
 ```python
 SUBSET = "small"  # or "medium"
 ```
 
-The CRNN notebook:
+Both notebooks read `DATASET_DIR` from your `.env` file via `python-dotenv`, so they work regardless of which directory Jupyter is launched from.
+
+Each CRNN notebook:
 
 - loads spectrogram manifests from `fma_preprocessed/`
 - trains a convolutional recurrent neural network with PyTorch
 - can run Optuna hyperparameter tuning
-- saves curves, reports, checkpoints, and comparison summaries
+- saves curves, reports, checkpoints, and comparison summaries under `code/crnn/results/<RUN_NAME>/`
 
 The main CRNN settings are defined near the top of the notebook:
 
@@ -329,7 +332,7 @@ WEIGHT_DECAY = 1e-5
 RUN_NAME = "spec_aug"
 ```
 
-Outputs for each run are written under `code/crnn/results/<RUN_NAME>/`, including:
+Outputs for each run include:
 
 - `best_crnn.pth`
 - `accuracy_curve.png`
@@ -348,38 +351,38 @@ Large datasets, generated spectrograms, model checkpoints, and most CSV outputs 
 
 ## Running on MSCluster
 
-On MSCluster, set `DATASET_DIR` in `.env` to your project directory:
+On MSCluster, set `DATASET_DIR` in `.env` to your project directory, e.g.:
 
 ```bash
 DATASET_DIR=/home/<user>/acml-project
 ```
 
-Allocate an interactive shell:
+**Terminal 1 — on the cluster:**
+
+Allocate an interactive shell on a compute node:
 
 ```bash
-srun -N1 --ntasks=16 -p bigbatch --pty bash
+srun -N1 --ntasks=16 -p stampede --pty bash
 ```
 
-From the project root, run the setup script and activate the Python environment:
+Navigate to the project, activate the environment, and start Jupyter from the `code/` directory:
 
 ```bash
-bash setup.sh # Will install a compatible Python version
+cd acml-project/
 source .venv/bin/activate
-```
-
-To run Jupyter on the cluster and open it in your browser, start Jupyter on the cluster:
-
-```bash
+cd code/
 jupyter lab --no-browser --port=8888
 ```
 
-In a separate terminal on your local machine, create an SSH tunnel:
+**Terminal 2 — on your local machine:**
+
+Once the compute node is allocated (e.g. `mscluster21`), open an SSH tunnel through the login node to that specific node:
 
 ```bash
-ssh -L 8888:localhost:8888 username@remote-server
+ssh -J <user>@<mscluster-ip> -N -L 8888:localhost:8888 <user>@mscluster<node>
 ```
 
-Then open:
+Replace `<user>` with your username and `mscluster<node>` with whichever node was allocated. Then open:
 
 ```text
 http://localhost:8888
