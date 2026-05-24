@@ -372,7 +372,7 @@ DATASET_DIR=/home/<user>/acml-project
 Allocate an interactive shell on a compute node:
 
 ```bash
-srun -N1 --ntasks=16 -p stampede --pty bash
+srun -N1 --ntasks=16 -p bigbatch --pty bash
 ```
 
 Navigate to the project, activate the environment, and start Jupyter from the `code/` directory:
