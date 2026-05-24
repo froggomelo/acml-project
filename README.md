@@ -39,10 +39,10 @@ Open `.env` and set these variables:
 | Variable | Required | Description |
 |---|---|---|
 | `DATASET_DIR` | yes | Directory where `fma_small/`, `fma_medium/`, and `fma_metadata/` live. Setup downloads data here. |
-| `PREPROCESSED_DIR` | no | Where cleaned CSVs and spectrograms are written. Defaults to `DATASET_DIR/fma_preprocessed`. |
+| `PREPROCESSED_DIR` | no | Where cleaned CSVs, filtered feature CSVs, and spectrograms are written. Defaults to `DATASET_DIR/fma_preprocessed`. |
 | `DATASET_SIZE` | yes | Which subset to use: `small` (8 k tracks, 8 genres), `medium` (25 k tracks, 16 genres), or `both`. Controls which audio files are downloaded and which subsets the preprocessing notebook processes. |
 | `DOWNLOAD_SPECTROGRAMS` | no | Set to `1` for setup to download the audio files selected by `DATASET_SIZE`. Default is `0` (only set up the Python environment, skip audio download). |
-| `PREPROCESS_FOR` | no | Which spectrogram formats the preprocessing notebook generates: `cnn` (10-second clips), `crnn` (20-second clips), `both`, or `none`. Default is `cnn`. |
+| `PREPROCESS_FOR` | no | Which spectrogram formats the preprocessing notebook generates: `cnn` (10-second clips), `crnn` (20-second clips), `both`, or `none`. Default is `both`. |
 | `PYTHON_BIN` | no | Existing Python 3.10+ interpreter to use instead of auto-detection/source build. Useful when a managed Python already has `venv`, `ctypes`, and `sqlite3`. |
 | `SETUP_BUILD_DIR` | no | Scratch directory for source builds. Defaults to `.setup-build/` inside the repository. |
 | `MAKE_JOBS` | no | Number of parallel jobs to use when compiling local dependencies. Defaults to auto-detection. |
@@ -118,7 +118,7 @@ If your dataset is stored somewhere outside the repository, set `DATASET_DIR` in
 
 ## Data Preprocessing
 
-`setup.sh` does not run preprocessing. Run preprocessing manually only when you need the cleaned CSVs, tabular feature CSVs, or spectrograms. Start Jupyter from the project root:
+`setup.sh` downloads the requested FMA files, but it does not create the cleaned metadata, filtered tabular features, or spectrogram arrays. Run preprocessing manually from the project root when those generated files are needed:
 
 ```bash
 jupyter notebook
@@ -130,7 +130,9 @@ Open and run:
 code/data_preprocessing.ipynb
 ```
 
-The notebook reads `DATASET_DIR`, `PREPROCESSED_DIR`, `DATASET_SIZE`, and `PREPROCESS_FOR` from your `.env`. It creates `fma_preprocessed/` (or the directory set in `PREPROCESSED_DIR`), including:
+The notebook reads `DATASET_DIR`, `PREPROCESSED_DIR`, `DATASET_SIZE`, and `PREPROCESS_FOR` from `.env`. 
+
+The notebook creates `fma_preprocessed/` (or the directory set in `PREPROCESSED_DIR`), including:
 
 - `tracks_clean_small.csv`
 - `tracks_clean_small_training.csv`
@@ -148,7 +150,15 @@ The notebook reads `DATASET_DIR`, `PREPROCESSED_DIR`, `DATASET_SIZE`, and `PREPR
 - `spectrograms_medium_10_manifest.csv` when `DATASET_SIZE=medium` or `both` and `PREPROCESS_FOR=cnn` or `both`
 - `spectrograms_small_20_manifest.csv` when `PREPROCESS_FOR=crnn` or `both`
 - `spectrograms_medium_20_manifest.csv` when `DATASET_SIZE=medium` or `both` and `PREPROCESS_FOR=crnn` or `both`
+- `spectrograms_<size>_<10|20>_training.csv`
+- `spectrograms_<size>_<10|20>_validation.csv`
+- `spectrograms_<size>_<10|20>_test.csv`
+- `spectrograms_<size>_<10|20>_extraction_errors.csv` when any MP3 cannot be decoded
 - `spectrograms_<size>_<10|20>/`
+
+For feature-based models, the notebook loads `fma_metadata/features.csv` with its three-row FMA header, filters it to the cleaned track ids, and writes `features_small.csv` and `features_medium.csv` with 518 feature columns. Random Forest, MLP, and XGBoost then align those feature rows with the cleaned split CSVs by `track_id`; Random Forest flattens the multi-level feature names when it loads them.
+
+For spectrogram-based models, the notebook converts local MP3 files to mono 16 kHz audio, center-crops or zero-pads each clip, computes a 64-bin mel spectrogram with `n_fft=400` and `hop_length=160`, converts it to log power, applies per-clip z-score normalization, and saves `float32` `.npy` arrays. `PREPROCESS_FOR=cnn` generates 10-second spectrograms with shape `(1, 64, 1001)`, while `PREPROCESS_FOR=crnn` generates 20-second spectrograms with shape `(1, 64, 2001)`. Additional decoding failures during extraction are omitted from the manifest and written to `spectrograms_<subset>_<10|20>_extraction_errors.csv`.
 
 Run preprocessing before running any model. Random Forest, MLP, and XGBoost read the cleaned CSV files and `features_<subset>.csv`. The CNN and CRNN read the spectrogram manifest CSVs and the `.npy` spectrogram files. If you only need the tabular models, set `PREPROCESS_FOR=none` to skip spectrogram generation.
 
