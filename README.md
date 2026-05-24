@@ -1,4 +1,4 @@
-# ACML Project FMA Music Classification
+# ACML Project: FMA Music Classification
 
 Course project repository for music genre classification experiments on the Free Music Archive (FMA) dataset.
 
